@@ -2,17 +2,22 @@
 
 state_dir="${SIGNAL_SEND_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/signal-send}"
 db="${SIGNAL_SEND_DB:-$state_dir/cli.db3}"
-group_key_file="${SIGNAL_SEND_GROUP_KEY_FILE:-$state_dir/group_master_key}"
 device_name="${SIGNAL_SEND_DEVICE_NAME:-$(hostname)-signal-send}"
 discover_timeout="${SIGNAL_SEND_DISCOVER_TIMEOUT:-120}"
+project_id=""
+group_key_file=""
+group_key_source="project"
 
 usage() {
   cat >&2 <<'USAGE'
 usage:
   signal-send setup
+  signal-send setup-device
+  signal-send setup-project
   signal-send link
   signal-send sync
   signal-send groups
+  signal-send projects
   signal-send select-group
   signal-send discover-group
   signal-send status
@@ -24,6 +29,71 @@ USAGE
 ensure_state_dir() {
   mkdir -p "$state_dir" || return $?
   chmod 700 "$state_dir" || return $?
+}
+
+find_project_root() {
+  local dir
+  dir="${PWD:-.}"
+
+  while [[ "$dir" != "/" ]]; do
+    if [[ -e "$dir/.git" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="${dir%/*}"
+    [[ -n "$dir" ]] || dir="/"
+  done
+
+  if [[ -e "/.git" ]]; then
+    printf '%s\n' "/"
+  else
+    printf '%s\n' "${PWD:-.}"
+  fi
+}
+
+sanitize_project_id() {
+  awk '{ gsub(/[^A-Za-z0-9_.-]/, "_"); gsub(/^_+|_+$/, ""); print ($0 == "" ? "default" : $0) }' <<<"$1"
+}
+
+resolve_project_id() {
+  local raw root
+
+  if [[ -n "${SIGNAL_SEND_PROJECT+x}" ]]; then
+    if [[ -z "$SIGNAL_SEND_PROJECT" ]]; then
+      printf 'signal-send: SIGNAL_SEND_PROJECT is empty\n' >&2
+      return 64
+    fi
+    raw="$SIGNAL_SEND_PROJECT"
+  else
+    root="$(find_project_root)" || return $?
+    raw="${root##*/}"
+  fi
+
+  sanitize_project_id "$raw"
+}
+
+configure_target() {
+  project_id="$(resolve_project_id)" || return $?
+
+  if [[ -n "${SIGNAL_SEND_GROUP_KEY_FILE+x}" ]]; then
+    if [[ -z "$SIGNAL_SEND_GROUP_KEY_FILE" ]]; then
+      printf 'signal-send: SIGNAL_SEND_GROUP_KEY_FILE is empty\n' >&2
+      return 64
+    fi
+    group_key_source="explicit"
+    group_key_file="$SIGNAL_SEND_GROUP_KEY_FILE"
+  else
+    group_key_source="project"
+    group_key_file="$state_dir/projects/$project_id/group_master_key"
+  fi
+}
+
+ensure_project_state_dir() {
+  local project_dir
+  ensure_state_dir || return $?
+  project_dir="$state_dir/projects/$project_id"
+  mkdir -p "$project_dir" || return $?
+  chmod 700 "$state_dir/projects" "$project_dir" || return $?
 }
 
 presage() {
@@ -132,6 +202,12 @@ cmd_sync() {
   quiet_sync
 }
 
+cmd_setup_device() {
+  ensure_state_dir || return $?
+  cmd_link || return $?
+  quiet_sync
+}
+
 cmd_groups() {
   local line lines status index
   index=1
@@ -157,8 +233,36 @@ cmd_groups() {
   fi
 }
 
+cmd_projects() {
+  local dir name found
+  found=0
+
+  ensure_state_dir || return $?
+  for dir in "$state_dir"/projects/*; do
+    [[ -d "$dir" ]] || continue
+    found=1
+    name="${dir##*/}"
+    if [[ -s "$dir/group_master_key" ]]; then
+      printf '%s selected\n' "$name"
+    else
+      printf '%s not-selected\n' "$name"
+    fi
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    printf 'signal-send: no project group keys found\n' >&2
+    return 1
+  fi
+}
+
 cmd_select_group() {
   local group_output lines line index choice key key_dir tmp status
+  if [[ "$group_key_source" == "project" ]]; then
+    ensure_project_state_dir || return $?
+  else
+    ensure_state_dir || return $?
+  fi
+
   group_output="$(read_group_lines)"
   status=$?
   if [[ "$status" -ne 0 ]]; then
@@ -196,7 +300,7 @@ cmd_select_group() {
     key_dir="."
   fi
 
-  if path_has_symlink_component "$group_key_file"; then
+  if [[ "$group_key_source" == "explicit" ]] && path_has_symlink_component "$group_key_file"; then
     printf 'signal-send: group key file is managed or symlinked: %s\n' "$group_key_file" >&2
     printf 'signal-send: run selection before redirecting groupKeyFile, or update the secret source\n' >&2
     return 1
@@ -277,18 +381,31 @@ cmd_discover_group() {
   return 1
 }
 
-cmd_setup() {
+cmd_onboard_project_group() {
   local count
-  ensure_state_dir
-  cmd_link || return $?
-  quiet_sync || return $?
-
   count="$(group_count)" || return $?
   if [[ "$count" -eq 0 ]]; then
     cmd_discover_group
   else
     cmd_select_group
   fi
+}
+
+cmd_setup_project() {
+  ensure_project_state_dir || return $?
+  if ! is_registered; then
+    printf 'signal-send: device is not linked; run signal-send setup-device first\n' >&2
+    return 64
+  fi
+
+  quiet_sync || return $?
+  cmd_onboard_project_group
+}
+
+cmd_setup() {
+  cmd_setup_device || return $?
+  ensure_project_state_dir || return $?
+  cmd_onboard_project_group
 }
 
 cmd_status() {
@@ -300,7 +417,10 @@ cmd_status() {
     printf 'linked: no\n'
   fi
 
+  printf 'project: %s\n' "$project_id"
+  printf 'group-key-source: %s\n' "$group_key_source"
   printf 'db: %s\n' "$db"
+  printf 'group-key-file: %s\n' "$group_key_file"
   if [[ -s "$group_key_file" ]]; then
     printf 'group: selected\n'
   else
@@ -342,7 +462,11 @@ cmd_send() {
   done
 
   if [[ ! -s "$group_key_file" ]]; then
-    printf 'signal-send: no selected group; run signal-send setup or signal-send select-group\n' >&2
+    if [[ "$group_key_source" == "project" ]]; then
+      printf 'signal-send: no selected group for project %s; run signal-send setup-project or signal-send select-group\n' "$project_id" >&2
+    else
+      printf 'signal-send: no selected group; check SIGNAL_SEND_GROUP_KEY_FILE\n' >&2
+    fi
     return 64
   fi
 
@@ -379,6 +503,16 @@ main() {
       [[ $# -eq 0 ]] || { usage; return 64; }
       cmd_setup
       ;;
+    setup-device)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_setup_device
+      ;;
+    setup-project)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_setup_project
+      ;;
     link)
       shift
       [[ $# -eq 0 ]] || { usage; return 64; }
@@ -393,6 +527,11 @@ main() {
       shift
       [[ $# -eq 0 ]] || { usage; return 64; }
       cmd_groups
+      ;;
+    projects)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_projects
       ;;
     select-group)
       shift
@@ -424,5 +563,6 @@ main() {
   esac
 }
 
+configure_target || exit $?
 main "$@"
 exit $?

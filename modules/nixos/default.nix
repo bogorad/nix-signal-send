@@ -14,6 +14,9 @@ let
   configuredPackage = pkgs.writeShellScriptBin "signal-send" ''
     export SIGNAL_SEND_STATE_DIR=${lib.escapeShellArg cfg.stateDir}
     ${lib.optionalString (
+      cfg.project != null
+    ) "export SIGNAL_SEND_PROJECT=${lib.escapeShellArg cfg.project}"}
+    ${lib.optionalString (
       cfg.groupKeyFile != null
     ) "export SIGNAL_SEND_GROUP_KEY_FILE=${lib.escapeShellArg cfg.groupKeyFile}"}
     exec ${lib.getExe cfg.package} "$@"
@@ -41,6 +44,13 @@ in
       default = null;
       example = "/run/secrets/signal-send/groups/default/master_key";
       description = "Optional file containing the selected Signal V2 group master key.";
+    };
+
+    project = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "nightly-alerts";
+      description = "Optional project id used for state-local project group keys when groupKeyFile is unset.";
     };
 
     user = lib.mkOption {
