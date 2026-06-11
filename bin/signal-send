@@ -73,6 +73,35 @@ group_label() {
   printf '%s\n' "${1#* }" | awk '{ sub(/ \/ revision .*/, ""); print }'
 }
 
+path_has_symlink_component() {
+  local path current part
+  local -a parts
+  path="$1"
+
+  case "$path" in
+    /*)
+      current="/"
+      path="${path#/}"
+      ;;
+    *)
+      current="."
+      ;;
+  esac
+
+  IFS='/' read -r -a parts <<<"$path"
+  for part in "${parts[@]}"; do
+    [[ -n "$part" && "$part" != "." ]] || continue
+    if [[ "$current" == "/" ]]; then
+      current="/$part"
+    else
+      current="$current/$part"
+    fi
+    [[ ! -L "$current" ]] || return 0
+  done
+
+  return 1
+}
+
 cmd_link() {
   ensure_state_dir
   if is_registered; then
@@ -167,7 +196,7 @@ cmd_select_group() {
     key_dir="."
   fi
 
-  if [[ -L "$group_key_file" ]]; then
+  if path_has_symlink_component "$group_key_file"; then
     printf 'signal-send: group key file is managed or symlinked: %s\n' "$group_key_file" >&2
     printf 'signal-send: run selection before redirecting groupKeyFile, or update the secret source\n' >&2
     return 1

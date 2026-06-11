@@ -26,4 +26,5 @@ temporary file before replacing the selected group key.
 
 Managed secret paths are refused during selection so `/run/secrets` symlinks or
 non-writable runtime secret directories are not replaced by local group
-selection.
+selection. The refusal checks symlink components across the destination path,
+not only the final key file.
