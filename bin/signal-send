@@ -6,6 +6,7 @@ device_name="${SIGNAL_SEND_DEVICE_NAME:-$(hostname)-signal-send}"
 discover_timeout="${SIGNAL_SEND_DISCOVER_TIMEOUT:-120}"
 project_id=""
 group_key_file=""
+legacy_group_key_file=""
 group_key_source="project"
 
 usage() {
@@ -85,6 +86,7 @@ configure_target() {
   else
     group_key_source="project"
     group_key_file="$state_dir/projects/$project_id/group_master_key"
+    legacy_group_key_file="$state_dir/group_master_key"
   fi
 }
 
@@ -170,6 +172,18 @@ path_has_symlink_component() {
   done
 
   return 1
+}
+
+active_group_key_file() {
+  if [[ "$group_key_source" == "project" && ! -s "$group_key_file" && -s "$legacy_group_key_file" ]]; then
+    printf '%s\n' "$legacy_group_key_file"
+  else
+    printf '%s\n' "$group_key_file"
+  fi
+}
+
+uses_legacy_group_key() {
+  [[ "$group_key_source" == "project" && ! -s "$group_key_file" && -s "$legacy_group_key_file" ]]
 }
 
 cmd_link() {
@@ -421,7 +435,10 @@ cmd_status() {
   printf 'group-key-source: %s\n' "$group_key_source"
   printf 'db: %s\n' "$db"
   printf 'group-key-file: %s\n' "$group_key_file"
-  if [[ -s "$group_key_file" ]]; then
+  if uses_legacy_group_key; then
+    printf 'legacy-group-key-file: %s\n' "$legacy_group_key_file"
+    printf 'group: selected (legacy fallback)\n'
+  elif [[ -s "$group_key_file" ]]; then
     printf 'group: selected\n'
   else
     printf 'group: not selected\n'
@@ -429,7 +446,7 @@ cmd_status() {
 }
 
 cmd_send() {
-  local attachments message key
+  local attachments message key key_file
   attachments=()
 
   while [[ $# -gt 0 ]]; do
@@ -461,7 +478,8 @@ cmd_send() {
     esac
   done
 
-  if [[ ! -s "$group_key_file" ]]; then
+  key_file="$(active_group_key_file)"
+  if [[ ! -s "$key_file" ]]; then
     if [[ "$group_key_source" == "project" ]]; then
       printf 'signal-send: no selected group for project %s; run signal-send setup-project or signal-send select-group\n' "$project_id" >&2
     else
@@ -470,7 +488,7 @@ cmd_send() {
     return 64
   fi
 
-  key="$(tr -d '[:space:]' <"$group_key_file")"
+  key="$(tr -d '[:space:]' <"$key_file")"
   if ! [[ "$key" =~ ^[0-9a-f]{64}$ ]]; then
     printf 'signal-send: group key file is not a 64-character hex key\n' >&2
     return 65

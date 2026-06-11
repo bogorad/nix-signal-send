@@ -13,9 +13,7 @@ let
   };
   configuredPackage = pkgs.writeShellScriptBin "signal-send" ''
     export SIGNAL_SEND_STATE_DIR=${lib.escapeShellArg cfg.stateDir}
-    ${lib.optionalString (
-      cfg.project != null
-    ) "export SIGNAL_SEND_PROJECT=${lib.escapeShellArg cfg.project}"}
+    export SIGNAL_SEND_PROJECT=${lib.escapeShellArg cfg.project}
     ${lib.optionalString (
       cfg.groupKeyFile != null
     ) "export SIGNAL_SEND_GROUP_KEY_FILE=${lib.escapeShellArg cfg.groupKeyFile}"}
@@ -47,8 +45,8 @@ in
     };
 
     project = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
+      type = lib.types.str;
+      default = "default";
       example = "nightly-alerts";
       description = "Optional project id used for state-local project group keys when groupKeyFile is unset.";
     };

@@ -166,6 +166,12 @@ If you set `services.signal-send.project`, the wrapper exports
 /var/lib/signal-send/projects/<project>/group_master_key
 ```
 
+The module defaults `project` to `default` when `groupKeyFile` is unset, so
+NixOS usage does not depend on the caller's current working directory.
+
+Older state using a single key at `stateDir/group_master_key` is still accepted
+as a compatibility fallback when no per-project key exists.
+
 ## SOPS
 
 SOPS is not part of the normal local project workflow.

@@ -10,3 +10,7 @@ selected group key under XDG state.
 SOPS is no longer presented as the normal local workflow. It remains an
 optional deployment transport when a group key must travel with declarative host
 configuration.
+
+Roborev follow-up made the NixOS wrapper export a stable default project id and
+kept existing single-key installs working through the legacy
+`state_dir/group_master_key` fallback.
