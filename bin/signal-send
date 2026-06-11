@@ -167,6 +167,17 @@ cmd_select_group() {
     key_dir="."
   fi
 
+  if [[ -L "$group_key_file" ]]; then
+    printf 'signal-send: group key file is managed or symlinked: %s\n' "$group_key_file" >&2
+    printf 'signal-send: run selection before redirecting groupKeyFile, or update the secret source\n' >&2
+    return 1
+  fi
+  if [[ ! -d "$key_dir" || ! -w "$key_dir" ]]; then
+    printf 'signal-send: group key directory is not writable: %s\n' "$key_dir" >&2
+    printf 'signal-send: run selection before redirecting groupKeyFile, or update the secret source\n' >&2
+    return 1
+  fi
+
   tmp="$(mktemp "$key_dir/.signal-send-group-key.XXXXXX")"
   status=$?
   if [[ "$status" -ne 0 ]]; then

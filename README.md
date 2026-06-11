@@ -113,6 +113,9 @@ If you set `services.signal-send.user` to another user, run setup as that user.
 For the first run, leave `groupKeyFile` unset so setup can write
 `/var/lib/signal-send/group_master_key`. After setup, move that value into SOPS,
 expose it at runtime, and then set `groupKeyFile` to the SOPS-managed path.
+After `groupKeyFile` points at a managed secret such as `/run/secrets/...`, do
+not run `signal-send select-group` against that path. Select a new group into a
+normal local state file first, then update the encrypted secret source.
 
 ## Security Notes
 

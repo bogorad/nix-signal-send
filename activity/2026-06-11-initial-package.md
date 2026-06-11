@@ -23,3 +23,7 @@ failures stop the command, discovery propagates selection errors, and
 `discover-group` waits for newly learned group activity instead of immediately
 stopping on already-known groups. Key updates now write to a same-directory
 temporary file before replacing the selected group key.
+
+Managed secret paths are refused during selection so `/run/secrets` symlinks or
+non-writable runtime secret directories are not replaced by local group
+selection.
