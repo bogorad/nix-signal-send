@@ -162,8 +162,14 @@ cmd_select_group() {
   fi
 
   key="${lines[$((choice - 1))]%% *}"
-  install -m 0600 /dev/null "$group_key_file"
-  printf '%s\n' "$key" >"$group_key_file"
+  if ! install -m 0600 /dev/null "$group_key_file"; then
+    printf 'signal-send: unable to prepare group key file: %s\n' "$group_key_file" >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$key" >"$group_key_file"; then
+    printf 'signal-send: unable to write group key file: %s\n' "$group_key_file" >&2
+    return 1
+  fi
   printf 'signal-send: selected %s\n' "$(group_label "${lines[$((choice - 1))]}")" >&2
 }
 
@@ -186,10 +192,10 @@ cmd_discover_group() {
       wait "$pid" 2>/dev/null || true
       return 1
     }
-    if (( after > before || after > 0 )); then
+    if (( after > before )); then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
-      cmd_select_group
+      cmd_select_group || return $?
       return 0
     fi
   done
