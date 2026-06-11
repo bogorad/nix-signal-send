@@ -21,4 +21,5 @@ group key first, then move that key into SOPS and consume it through
 Roborev follow-up tightened first-run group selection so key-file write
 failures stop the command, discovery propagates selection errors, and
 `discover-group` waits for newly learned group activity instead of immediately
-stopping on already-known groups.
+stopping on already-known groups. Key updates now write to a same-directory
+temporary file before replacing the selected group key.
