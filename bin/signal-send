@@ -175,15 +175,19 @@ path_has_symlink_component() {
 }
 
 active_group_key_file() {
-  if [[ "$group_key_source" == "project" && ! -s "$group_key_file" && -s "$legacy_group_key_file" ]]; then
+  if uses_legacy_group_key; then
     printf '%s\n' "$legacy_group_key_file"
   else
     printf '%s\n' "$group_key_file"
   fi
 }
 
+legacy_group_key_allowed() {
+  [[ "$group_key_source" == "project" && "$project_id" == "default" ]]
+}
+
 uses_legacy_group_key() {
-  [[ "$group_key_source" == "project" && ! -s "$group_key_file" && -s "$legacy_group_key_file" ]]
+  legacy_group_key_allowed && [[ ! -s "$group_key_file" && -s "$legacy_group_key_file" ]]
 }
 
 cmd_link() {
@@ -482,6 +486,9 @@ cmd_send() {
   if [[ ! -s "$key_file" ]]; then
     if [[ "$group_key_source" == "project" ]]; then
       printf 'signal-send: no selected group for project %s; run signal-send setup-project or signal-send select-group\n' "$project_id" >&2
+      if [[ "$project_id" != "default" && -s "$legacy_group_key_file" ]]; then
+        printf 'signal-send: legacy key at %s is only used for project default\n' "$legacy_group_key_file" >&2
+      fi
     else
       printf 'signal-send: no selected group; check SIGNAL_SEND_GROUP_KEY_FILE\n' >&2
     fi

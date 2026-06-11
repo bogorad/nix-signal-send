@@ -169,8 +169,10 @@ If you set `services.signal-send.project`, the wrapper exports
 The module defaults `project` to `default` when `groupKeyFile` is unset, so
 NixOS usage does not depend on the caller's current working directory.
 
-Older state using a single key at `stateDir/group_master_key` is still accepted
-as a compatibility fallback when no per-project key exists.
+Older state using a single key at `stateDir/group_master_key` is accepted only
+for the `default` project. Named projects must select their own group under
+`stateDir/projects/<project>/group_master_key` so project sends cannot silently
+route to the wrong Signal group.
 
 ## SOPS
 
