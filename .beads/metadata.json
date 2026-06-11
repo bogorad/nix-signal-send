@@ -1,0 +1,10 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_host": "doltsrv.lan",
+  "dolt_server_port": 3307,
+  "dolt_server_user": "root",
+  "dolt_database": "nix_signal_send",
+  "project_id": "b94feaed-8f53-4af2-a617-14c49075d19e"
+}
