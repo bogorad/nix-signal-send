@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+
+state_dir="${SIGNAL_SEND_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/signal-send}"
+db="${SIGNAL_SEND_DB:-$state_dir/cli.db3}"
+group_key_file="${SIGNAL_SEND_GROUP_KEY_FILE:-$state_dir/group_master_key}"
+device_name="${SIGNAL_SEND_DEVICE_NAME:-$(hostname)-signal-send}"
+discover_timeout="${SIGNAL_SEND_DISCOVER_TIMEOUT:-120}"
+
+usage() {
+  cat >&2 <<'USAGE'
+usage:
+  signal-send setup
+  signal-send link
+  signal-send sync
+  signal-send groups
+  signal-send select-group
+  signal-send discover-group
+  signal-send status
+  signal-send [--attach PATH ...] MESSAGE
+  printf '%s\n' MESSAGE | signal-send [--attach PATH ...]
+USAGE
+}
+
+ensure_state_dir() {
+  mkdir -p "$state_dir" || return $?
+  chmod 700 "$state_dir" || return $?
+}
+
+presage() {
+  presage-cli --sqlite-db-path "$db" "$@"
+}
+
+is_registered() {
+  presage whoami >/dev/null 2>&1
+}
+
+read_group_lines() {
+  local output status
+  output="$(presage list-groups 2>/dev/null)"
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    unset output
+    return "$status"
+  fi
+
+  awk '/^[0-9a-f]{64} / { print }' <<<"$output"
+  status=$?
+  unset output
+  return "$status"
+}
+
+group_count() {
+  local lines status
+  lines="$(read_group_lines)"
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    unset lines
+    return "$status"
+  fi
+
+  if [[ -z "$lines" ]]; then
+    printf '0\n'
+    return 0
+  fi
+
+  awk 'END { print NR + 0 }' <<<"$lines"
+  status=$?
+  unset lines
+  return "$status"
+}
+
+group_label() {
+  printf '%s\n' "${1#* }" | awk '{ sub(/ \/ revision .*/, ""); print }'
+}
+
+cmd_link() {
+  ensure_state_dir
+  if is_registered; then
+    printf 'signal-send: already linked at %s\n' "$db" >&2
+    return 0
+  fi
+
+  presage link-device --device-name "$device_name" || return $?
+  chmod 600 "$db"* 2>/dev/null || true
+}
+
+quiet_sync() {
+  local tmp status
+  tmp="$(mktemp -d)" || return $?
+  status=0
+
+  presage sync-contacts >"$tmp/sync-contacts.out" 2>"$tmp/sync-contacts.err" || status=$?
+  if [[ "$status" -eq 0 ]]; then
+    presage sync --stop-after-empty-queue >"$tmp/sync.out" 2>"$tmp/sync.err" || status=$?
+  fi
+
+  rm -rf "$tmp"
+  return "$status"
+}
+
+cmd_sync() {
+  ensure_state_dir
+  quiet_sync
+}
+
+cmd_groups() {
+  local line lines status index
+  index=1
+
+  lines="$(read_group_lines)"
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    printf 'signal-send: unable to list groups; run signal-send sync first\n' >&2
+    unset lines
+    return "$status"
+  fi
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    printf '%d. %s\n' "$index" "$(group_label "$line")"
+    index=$((index + 1))
+  done <<<"$lines"
+  unset lines
+
+  if [[ "$index" -eq 1 ]]; then
+    printf 'signal-send: no groups found; run signal-send discover-group\n' >&2
+    return 1
+  fi
+}
+
+cmd_select_group() {
+  local group_output lines line index choice key status
+  group_output="$(read_group_lines)"
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    printf 'signal-send: unable to list groups; run signal-send sync first\n' >&2
+    unset group_output
+    return "$status"
+  fi
+
+  if [[ -z "$group_output" ]]; then
+    printf 'signal-send: no groups found; run signal-send discover-group\n' >&2
+    unset group_output
+    return 1
+  fi
+
+  mapfile -t lines <<<"$group_output"
+  unset group_output
+
+  index=1
+  for line in "${lines[@]}"; do
+    printf '%d. %s\n' "$index" "$(group_label "$line")"
+    index=$((index + 1))
+  done
+
+  printf 'Choose group [1-%d]: ' "${#lines[@]}" >&2
+  read -r choice
+
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#lines[@]} )); then
+    printf 'signal-send: invalid group choice\n' >&2
+    return 64
+  fi
+
+  key="${lines[$((choice - 1))]%% *}"
+  install -m 0600 /dev/null "$group_key_file"
+  printf '%s\n' "$key" >"$group_key_file"
+  printf 'signal-send: selected %s\n' "$(group_label "${lines[$((choice - 1))]}")" >&2
+}
+
+cmd_discover_group() {
+  local before after deadline pid
+  ensure_state_dir
+  before="$(group_count)" || return $?
+  deadline=$((SECONDS + discover_timeout))
+
+  printf 'signal-send: listening for group activity for up to %s seconds\n' "$discover_timeout" >&2
+  printf 'signal-send: send a small message from your phone to the target group now\n' >&2
+
+  presage sync >/dev/null 2>&1 &
+  pid="$!"
+
+  while (( SECONDS < deadline )); do
+    sleep 2
+    after="$(group_count)" || {
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 1
+    }
+    if (( after > before || after > 0 )); then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      cmd_select_group
+      return 0
+    fi
+  done
+
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  printf 'signal-send: no group activity discovered before timeout\n' >&2
+  return 1
+}
+
+cmd_setup() {
+  local count
+  ensure_state_dir
+  cmd_link || return $?
+  quiet_sync || return $?
+
+  count="$(group_count)" || return $?
+  if [[ "$count" -eq 0 ]]; then
+    cmd_discover_group
+  else
+    cmd_select_group
+  fi
+}
+
+cmd_status() {
+  ensure_state_dir
+
+  if is_registered; then
+    printf 'linked: yes\n'
+  else
+    printf 'linked: no\n'
+  fi
+
+  printf 'db: %s\n' "$db"
+  if [[ -s "$group_key_file" ]]; then
+    printf 'group: selected\n'
+  else
+    printf 'group: not selected\n'
+  fi
+}
+
+cmd_send() {
+  local attachments message key
+  attachments=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --attach)
+        if [[ $# -lt 2 ]]; then
+          printf 'signal-send: missing value for --attach\n' >&2
+          return 64
+        fi
+        attachments+=(--attach "$2")
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        printf 'signal-send: unknown option: %s\n' "$1" >&2
+        usage
+        return 64
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  if [[ ! -s "$group_key_file" ]]; then
+    printf 'signal-send: no selected group; run signal-send setup or signal-send select-group\n' >&2
+    return 64
+  fi
+
+  key="$(tr -d '[:space:]' <"$group_key_file")"
+  if ! [[ "$key" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'signal-send: group key file is not a 64-character hex key\n' >&2
+    return 65
+  fi
+
+  if [[ $# -gt 0 ]]; then
+    message="$*"
+  else
+    message="$(cat)"
+  fi
+
+  if [[ -z "$message" ]]; then
+    printf 'signal-send: empty message\n' >&2
+    return 64
+  fi
+
+  presage send-to-group \
+    --master-key "$key" \
+    --message "$message" \
+    "${attachments[@]}"
+}
+
+main() {
+  local command
+  command="${1:-send}"
+
+  case "$command" in
+    setup)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_setup
+      ;;
+    link)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_link
+      ;;
+    sync)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_sync
+      ;;
+    groups)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_groups
+      ;;
+    select-group)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_select_group
+      ;;
+    discover-group)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_discover_group
+      ;;
+    status)
+      shift
+      [[ $# -eq 0 ]] || { usage; return 64; }
+      cmd_status
+      ;;
+    send)
+      if [[ $# -gt 0 ]]; then
+        shift
+      fi
+      cmd_send "$@"
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      cmd_send "$@"
+      ;;
+  esac
+}
+
+main "$@"
+exit $?
