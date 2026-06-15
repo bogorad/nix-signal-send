@@ -1,9 +1,10 @@
-
-# Beads / Dolt files (added by bd init)
-.dolt/
 *.db
+*.db3
+*.sqlite
+*.sqlite3
 .beads-credential-key
-.beads/proxieddb/
 .beads/dolt-config.log
-# roborev snapshots
-/.roborev/
+.beads/proxieddb/
+.dolt/
+.roborev/
+bin/

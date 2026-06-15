@@ -27,7 +27,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 bin/signal-send "$out/libexec/signal-send"
+    install -Dm755 pkgs/signal-send/signal-send "$out/libexec/signal-send"
     mkdir -p "$out/bin"
     printf '%s\n' '#!${bashNonInteractive}/bin/bash' > "$out/bin/signal-send"
     printf '%s\n' 'export PATH=${runtimePath}' >> "$out/bin/signal-send"
