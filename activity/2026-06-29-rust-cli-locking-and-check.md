@@ -39,7 +39,11 @@ Evidence:
 - Stale roborev Beads `nix-signal-send-k6m`, `nix-signal-send-3d4`, and
   `nix-signal-send-ri3` were closed.
 
-Remaining boundary:
+Publication:
 
-- The patch is staged but not committed or pushed.
+- Published to `origin/dev` in commit
+  `b2878bebae8f2360853e9ce859d6fbe53c92afec`.
+
+Remaining boundary for consumers:
+
 - Consuming nix-config has not been repinned or deployed.
