@@ -28,6 +28,11 @@ signal-send "alert text"
   -> exits
 ```
 
+Every command that touches the shared presage SQLite database takes an
+exclusive lock under the state directory first. That keeps the sync timer,
+manual status checks, and manual sends from racing each other on the same
+linked-device state.
+
 ## Device Onboarding
 
 Device onboarding is the original Signal secondary-device protocol. It should
@@ -105,6 +110,7 @@ signal-send setup
 signal-send setup-device
 signal-send setup-project
 signal-send status
+signal-send check
 signal-send projects
 signal-send groups
 signal-send select-group
@@ -123,6 +129,11 @@ SIGNAL_SEND_PROJECT=edgeiq-prod signal-send "prod deploy failed"
 
 Use `SIGNAL_SEND_GROUP_KEY_FILE` only when an external runtime secret or service
 wrapper should supply the group key path directly.
+
+`signal-send check` is the non-send verification command. It fails unless the
+device is linked, the current project has a selected group key, and that key
+matches one of the groups currently known to the linked device. It prints the
+selected group label, but never the group key.
 
 ## NixOS Module
 
