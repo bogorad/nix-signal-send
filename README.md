@@ -22,6 +22,7 @@ signal-send "alert text"
   -> opens the shared local presage SQLite linked-device DB
   -> resolves the current project id
   -> reads that project's selected group master key
+  -> drains pending Signal sync messages for the linked device
   -> connects to Signal
   -> sends the message
   -> exits

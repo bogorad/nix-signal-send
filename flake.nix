@@ -60,7 +60,7 @@
         shellcheck =
           pkgs.runCommand "signal-send-shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; }
             ''
-              shellcheck ${./bin/signal-send}
+              shellcheck ${./pkgs/signal-send/signal-send}
               touch "$out"
             '';
       });

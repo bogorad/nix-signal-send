@@ -201,18 +201,59 @@ cmd_link() {
   chmod 600 "$db"* 2>/dev/null || true
 }
 
-quiet_sync() {
+run_sync_steps() {
   local tmp status
-  tmp="$(mktemp -d)" || return $?
+  tmp=$1
   status=0
-
   presage sync-contacts >"$tmp/sync-contacts.out" 2>"$tmp/sync-contacts.err" || status=$?
   if [[ "$status" -eq 0 ]]; then
     presage sync --stop-after-empty-queue >"$tmp/sync.out" 2>"$tmp/sync.err" || status=$?
   fi
 
+  return "$status"
+}
+
+quiet_sync() {
+  local tmp status
+  tmp="$(mktemp -d)" || return $?
+  run_sync_steps "$tmp"
+  status=$?
   rm -rf "$tmp"
   return "$status"
+}
+
+print_sync_output_file() {
+  local file label line
+  label=$1
+  file=$2
+  if [[ -s "$file" ]]; then
+    while IFS= read -r line; do
+      printf 'signal-send: %s: %s\n' "$label" "$line" >&2
+    done <"$file"
+  fi
+}
+
+print_sync_diagnostics() {
+  local tmp
+  tmp=$1
+  print_sync_output_file "sync-contacts stderr" "$tmp/sync-contacts.err"
+  print_sync_output_file "sync-contacts stdout" "$tmp/sync-contacts.out"
+  print_sync_output_file "sync stderr" "$tmp/sync.err"
+  print_sync_output_file "sync stdout" "$tmp/sync.out"
+}
+
+sync_before_send() {
+  local status tmp
+  tmp="$(mktemp -d)" || return $?
+  run_sync_steps "$tmp"
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    printf 'signal-send: pre-send sync failed\n' >&2
+    print_sync_diagnostics "$tmp"
+    rm -rf "$tmp"
+    return "$status"
+  fi
+  rm -rf "$tmp"
 }
 
 cmd_sync() {
@@ -511,6 +552,8 @@ cmd_send() {
     printf 'signal-send: empty message\n' >&2
     return 64
   fi
+
+  sync_before_send || return $?
 
   presage send-to-group \
     --master-key "$key" \
