@@ -401,14 +401,34 @@ fn group_label(line: &str) -> &str {
     label.split(" / revision ").next().unwrap_or(label)
 }
 
-fn selected_group_label(config: &Config, key: &str) -> AppResult<Option<String>> {
+#[derive(Debug, PartialEq, Eq)]
+struct SelectedGroup {
+    label: String,
+    revision: u32,
+}
+
+fn group_revision(line: &str) -> Option<u32> {
+    let (_, suffix) = line.split_once(" / revision ")?;
+    suffix.split_whitespace().next()?.parse().ok()
+}
+
+fn selected_group(config: &Config, key: &str) -> AppResult<Option<SelectedGroup>> {
     for line in read_group_lines(config)? {
         let Some((group_key, _)) = line.split_once(' ') else {
             continue;
         };
 
         if group_key.eq_ignore_ascii_case(key) {
-            return Ok(Some(group_label(&line).to_string()));
+            let Some(revision) = group_revision(&line) else {
+                return Err(AppError::new(
+                    1,
+                    "signal-send: selected group is missing a revision in presage group state",
+                ));
+            };
+            return Ok(Some(SelectedGroup {
+                label: group_label(&line).to_string(),
+                revision,
+            }));
         }
     }
 
@@ -848,7 +868,7 @@ fn cmd_check(config: &Config) -> AppResult<()> {
     }
 
     let key = read_selected_group_key(key_file)?;
-    let Some(label) = selected_group_label(config, &key)? else {
+    let Some(group) = selected_group(config, &key)? else {
         return Err(AppError::new(
             1,
             format!(
@@ -861,7 +881,8 @@ fn cmd_check(config: &Config) -> AppResult<()> {
     println!("linked: yes");
     println!("project: {}", config.project_id);
     println!("group: selected");
-    println!("selected-group: {label}");
+    println!("selected-group: {}", group.label);
+    println!("selected-group-revision: {}", group.revision);
     println!("db: {}", config.db.display());
     println!("group-key-file: {}", key_file.display());
 
@@ -895,9 +916,27 @@ fn cmd_send(config: &Config, args: Vec<OsString>) -> AppResult<()> {
 
     sync_before_send(config)?;
 
+    let Some(group) = selected_group(config, &key)? else {
+        return Err(AppError::new(
+            1,
+            format!(
+                "signal-send: selected group key is not present in current Signal groups for project {}; run signal-send sync or signal-send select-group",
+                config.project_id
+            ),
+        ));
+    };
+    let revision = group.revision.to_string();
     let mut command = presage(
         config,
-        &["send-to-group", "--master-key", &key, "--message", &message],
+        &[
+            "send-to-group",
+            "--master-key",
+            &key,
+            "--message",
+            &message,
+            "--revision",
+            &revision,
+        ],
     );
     for attachment in attachments {
         command.arg("--attach").arg(attachment);

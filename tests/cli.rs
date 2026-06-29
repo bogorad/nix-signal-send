@@ -118,6 +118,7 @@ fn send_runs_sync_before_send_to_group() {
     let send = log.find("send-to-group").unwrap();
     assert!(contacts < sync);
     assert!(sync < send);
+    assert!(log.contains("send-to-group --master-key aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --message hello --revision 1"));
 }
 
 #[test]
@@ -149,6 +150,7 @@ fn check_reports_selected_group_label() {
     assert!(stdout.contains("linked: yes"));
     assert!(stdout.contains("project: nix-config"));
     assert!(stdout.contains("selected-group: Nix-config"));
+    assert!(stdout.contains("selected-group-revision: 1"));
 }
 
 #[test]
@@ -208,4 +210,18 @@ fn status_waits_for_concurrent_sync_lock() {
     let sync_pos = log.find("sync --stop-after-empty-queue").unwrap();
     let whoami_pos = log.rfind("whoami").unwrap();
     assert!(sync_pos < whoami_pos);
+}
+
+#[test]
+fn presage_group_patch_keeps_linked_device_metadata() {
+    let patch = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("pkgs/presage-cli/live-group-revision.patch"),
+    )
+    .unwrap();
+
+    assert!(patch.contains("revision: Some(revision.unwrap_or(0))"));
+    assert!(patch.contains(".profile_key"));
+    assert!(patch.contains(".get_or_insert(self.state.data.profile_key().get_bytes().to_vec())"));
+    assert!(patch.contains("message.required_protocol_version = Some(0);"));
+    assert!(patch.contains("let include_pni_signature = true;"));
 }

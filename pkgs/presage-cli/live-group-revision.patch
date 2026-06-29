@@ -1,0 +1,57 @@
+diff --git a/presage-cli/src/main.rs b/presage-cli/src/main.rs
+index 8ff5d386..5e9a80e0 100644
+--- a/presage-cli/src/main.rs
++++ b/presage-cli/src/main.rs
+@@ -218,6 +218,8 @@ enum Cmd {
+         master_key: GroupMasterKeyBytes,
+         #[clap(long = "attach", help = "Path to a file to attach, can be repeated")]
+         attachment_filepath: Vec<PathBuf>,
++        #[clap(long, help = "Group revision to include in outgoing V2 group context")]
++        revision: Option<u32>,
+     },
+     SyncContacts,
+     #[clap(
+@@ -750,6 +752,7 @@ async fn run<S: Store>(subcommand: Cmd, store: S) -> anyhow::Result<()> {
+             message,
+             master_key,
+             attachment_filepath,
++            revision,
+         } => {
+             let mut manager = load_registered_and_receive(store).await?;
+             let attachments = upload_attachments(attachment_filepath, &manager).await?;
+@@ -758,7 +761,7 @@ async fn run<S: Store>(subcommand: Cmd, store: S) -> anyhow::Result<()> {
+                 attachments,
+                 group_v2: Some(GroupContextV2 {
+                     master_key: Some(master_key.to_vec()),
+-                    revision: Some(0),
++                    revision: Some(revision.unwrap_or(0)),
+                     ..Default::default()
+                 }),
+                 ..Default::default()
+diff --git a/presage/src/manager/registered.rs b/presage/src/manager/registered.rs
+index 716cee3a..40048c87 100644
+--- a/presage/src/manager/registered.rs
++++ b/presage/src/manager/registered.rs
+@@ -1123,3 +1123,12 @@ impl<S: Store> Manager<S, Registered> {
+-        let sender_certificate = self.sender_certificate().await?;
++        // Match direct-message metadata so official linked clients can associate
++        // the incoming group message with this sender's current profile identity.
++        if let ContentBody::DataMessage(message) = &mut content_body {
++            message
++                .profile_key
++                .get_or_insert(self.state.data.profile_key().get_bytes().to_vec());
++            message.required_protocol_version = Some(0);
++        }
++
++        let sender_certificate = self.sender_certificate().await?;
+         let mut recipients = Vec::new();
+         for member in group
+@@ -1135,7 +1144,7 @@ impl<S: Store> Manager<S, Registered> {
+                         key: profile_key.derive_access_key().to_vec(),
+                         certificate: sender_certificate.clone(),
+                     });
+-            let include_pni_signature = false;
++            let include_pni_signature = true;
+             recipients.push((
+                 member.aci.into(),
+                 unidentified_access,
