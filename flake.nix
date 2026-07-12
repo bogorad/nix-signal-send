@@ -56,14 +56,13 @@
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
 
-      checks = forAllSystems (
-        pkgs:
-        let
-          system = pkgs.stdenv.hostPlatform.system;
-        in
-        {
-          signal-send = self.packages.${system}.signal-send;
-        }
-      );
+      checks = forAllSystems (pkgs: {
+        shellcheck =
+          pkgs.runCommand "signal-send-shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; }
+            ''
+              shellcheck ${./pkgs/signal-send/signal-send}
+              touch "$out"
+            '';
+      });
     };
 }

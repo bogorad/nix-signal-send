@@ -20,7 +20,7 @@ rustPlatform.buildRustPackage rec {
     hash = "sha256-M31TMN/l9WP28+xNE7A6nNUitORGpncY5xbON0kLjv4=";
   };
 
-  patches = [ ./live-group-revision.patch ];
+  patches = [ ./decryption-error-session-reset.patch ];
 
   cargoHash = "sha256-SNHalFjmA8wfSPPRVj0P4mb1Bw2zR2oXf/zQdYIVOM0=";
 

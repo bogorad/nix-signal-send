@@ -1,30 +1,40 @@
 {
   lib,
-  rustPlatform,
-  makeWrapper,
+  stdenvNoCC,
+  bashNonInteractive,
   presage-cli,
-  bash,
+  coreutils,
+  gawk,
+  gnugrep,
+  hostname,
 }:
 
-rustPlatform.buildRustPackage {
+let
+  runtimePath = lib.makeBinPath [
+    coreutils
+    gawk
+    gnugrep
+    hostname
+    presage-cli
+  ];
+in
+stdenvNoCC.mkDerivation {
   pname = "signal-send";
   version = "0.1.0";
 
   src = ../..;
 
-  cargoLock.lockFile = ../../Cargo.lock;
+  installPhase = ''
+    runHook preInstall
 
-  nativeBuildInputs = [ makeWrapper ];
+    install -Dm755 pkgs/signal-send/signal-send "$out/libexec/signal-send"
+    mkdir -p "$out/bin"
+    printf '%s\n' '#!${bashNonInteractive}/bin/bash' > "$out/bin/signal-send"
+    printf '%s\n' 'export PATH=${runtimePath}' >> "$out/bin/signal-send"
+    printf 'exec %s %s "$@"\n' '${bashNonInteractive}/bin/bash' "$out/libexec/signal-send" >> "$out/bin/signal-send"
+    chmod 0755 "$out/bin/signal-send"
 
-  nativeCheckInputs = [ bash ];
-
-  preCheck = ''
-    export TEST_BASH=${bash}/bin/bash
-  '';
-
-  postInstall = ''
-    wrapProgram "$out/bin/signal-send" \
-      --prefix PATH : ${lib.makeBinPath [ presage-cli ]}
+    runHook postInstall
   '';
 
   meta = {
