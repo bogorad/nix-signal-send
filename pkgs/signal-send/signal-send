@@ -213,15 +213,6 @@ run_sync_steps() {
   return "$status"
 }
 
-quiet_sync() {
-  local tmp status
-  tmp="$(mktemp -d)" || return $?
-  run_sync_steps "$tmp"
-  status=$?
-  rm -rf "$tmp"
-  return "$status"
-}
-
 print_sync_output_file() {
   local file label line
   label=$1
@@ -242,18 +233,17 @@ print_sync_diagnostics() {
   print_sync_output_file "sync stdout" "$tmp/sync.out"
 }
 
-sync_before_send() {
-  local status tmp
+quiet_sync() {
+  local tmp status
   tmp="$(mktemp -d)" || return $?
   run_sync_steps "$tmp"
   status=$?
   if [[ "$status" -ne 0 ]]; then
-    printf 'signal-send: pre-send sync failed\n' >&2
+    printf 'signal-send: sync failed\n' >&2
     print_sync_diagnostics "$tmp"
-    rm -rf "$tmp"
-    return "$status"
   fi
   rm -rf "$tmp"
+  return "$status"
 }
 
 cmd_sync() {
@@ -552,8 +542,6 @@ cmd_send() {
     printf 'signal-send: empty message\n' >&2
     return 64
   fi
-
-  sync_before_send || return $?
 
   presage send-to-group \
     --master-key "$key" \

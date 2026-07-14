@@ -89,5 +89,33 @@ in
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
     ];
+
+    systemd.services.signal-send-sync = {
+      description = "Drain Signal linked-device queue for signal-send";
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+
+      unitConfig.ConditionPathExists = "${cfg.stateDir}/cli.db3";
+
+      serviceConfig = {
+        Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
+        ExecStart = "${lib.getExe configuredPackage} sync";
+        TimeoutStartSec = "2min";
+      };
+    };
+
+    systemd.timers.signal-send-sync = {
+      description = "Run signal-send linked-device queue sync";
+      wantedBy = [ "timers.target" ];
+
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = "5min";
+        RandomizedDelaySec = "15s";
+        Persistent = true;
+      };
+    };
   };
 }

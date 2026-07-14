@@ -57,10 +57,50 @@
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
 
       checks = forAllSystems (pkgs: {
+        module-sync-timer =
+          let
+            system = pkgs.stdenv.hostPlatform.system;
+            moduleSystem = nixpkgs.lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.default
+                {
+                  system.stateVersion = "26.05";
+                  services.signal-send = {
+                    enable = true;
+                    package = pkgs.writeShellScriptBin "signal-send" "exit 0";
+                  };
+                }
+              ];
+            };
+            service = moduleSystem.config.systemd.services.signal-send-sync;
+            timer = moduleSystem.config.systemd.timers.signal-send-sync;
+          in
+          assert service.unitConfig.ConditionPathExists == "/var/lib/signal-send/cli.db3";
+          assert pkgs.lib.hasSuffix " sync" service.serviceConfig.ExecStart;
+          assert timer.timerConfig.OnUnitActiveSec == "5min";
+          pkgs.runCommand "signal-send-module-sync-timer" { } ''
+            touch "$out"
+          '';
         shellcheck =
           pkgs.runCommand "signal-send-shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; }
             ''
-              shellcheck ${./pkgs/signal-send/signal-send}
+              shellcheck ${./pkgs/signal-send/signal-send} ${./tests/send-only.sh}
+              touch "$out"
+            '';
+        send-only =
+          pkgs.runCommand "signal-send-send-only"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.gawk
+                pkgs.gnugrep
+                pkgs.hostname
+              ];
+            }
+            ''
+              bash ${./tests/send-only.sh} ${./pkgs/signal-send/signal-send} ${pkgs.bash}/bin/bash
               touch "$out"
             '';
       });

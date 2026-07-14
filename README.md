@@ -22,11 +22,15 @@ signal-send "alert text"
   -> opens the shared local presage SQLite linked-device DB
   -> resolves the current project id
   -> reads that project's selected group master key
-  -> drains pending Signal sync messages for the linked device
   -> connects to Signal
   -> sends the message
   -> exits
 ```
+
+Normal sends do not synchronize first. Run `signal-send sync` explicitly, or
+schedule it separately, to refresh contacts and drain pending linked-device
+messages without adding maintenance latency or failure modes to notification
+delivery.
 
 ## Device Onboarding
 
@@ -104,6 +108,7 @@ linked device.
 signal-send setup
 signal-send setup-device
 signal-send setup-project
+signal-send sync
 signal-send status
 signal-send projects
 signal-send groups
@@ -151,6 +156,9 @@ Example shape:
 ```
 
 This repo does not wire the module into any host configuration by itself.
+When enabled by a host, the module installs a system timer that runs
+`signal-send sync` two minutes after boot and every five minutes thereafter,
+with up to 15 seconds of randomized delay. Normal sends remain sync-free.
 
 After applying the module in a host configuration, initialize the linked-device
 state as the configured state owner:
