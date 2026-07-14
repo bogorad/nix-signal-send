@@ -1,3 +1,33 @@
+diff --git a/presage-cli/src/main.rs b/presage-cli/src/main.rs
+index 94eca8ddc5..53413e2071 100644
+--- a/presage-cli/src/main.rs
++++ b/presage-cli/src/main.rs
+@@ -120,6 +120,8 @@ enum Cmd {
+     ListDevices,
+     #[clap(about = "Get information on the registered user")]
+     Whoami,
++    #[clap(about = "Clear protocol sessions without unlinking this device")]
++    ResetSessions,
+     #[clap(about = "Retrieve the user profile")]
+     RetrieveProfile {
+         /// Id of the user to retrieve the profile. When omitted, retrieves the registered user
+@@ -700,6 +702,16 @@ async fn handle_command<S: Store + Send>(store: S, subcommand: Cmd) -> anyhow::R
+             let manager = Manager::load_registered(store).await?;
+             receive(manager, notifications, stop_after_empty_queue).await?;
+         }
++        Cmd::ResetSessions => {
++            let manager = Manager::load_registered(store).await?;
++            let service_ids = &manager.registration_data().service_ids;
++            let own_aci: ServiceId = service_ids.aci().into();
++            let own_pni: ServiceId = service_ids.pni().into();
++
++            manager.clear_sessions(&own_aci).await?;
++            manager.clear_sessions(&own_pni).await?;
++            println!("Cleared protocol sessions without unlinking this device");
++        }
+         Cmd::AddDevice { url } => {
+             let mut manager = load_registered_and_receive(store).await?;
+             manager.link_secondary(url).await?;
 diff --git a/presage-store-sqlite/src/protocol.rs b/presage-store-sqlite/src/protocol.rs
 index 7c74861745..c171f87733 100644
 --- a/presage-store-sqlite/src/protocol.rs

@@ -32,6 +32,11 @@ schedule it separately, to refresh contacts and drain pending linked-device
 messages without adding maintenance latency or failure modes to notification
 delivery.
 
+If this linked device has stale protocol sessions with another device on the
+same account, run `signal-send reset-sessions`. It clears only those local
+sessions through Presage so the next send establishes fresh sessions. It does
+not receive messages, synchronize contacts, or unlink the device.
+
 ## Device Onboarding
 
 Device onboarding is the original Signal secondary-device protocol. It should
@@ -109,6 +114,7 @@ signal-send setup
 signal-send setup-device
 signal-send setup-project
 signal-send sync
+signal-send reset-sessions
 signal-send status
 signal-send projects
 signal-send groups

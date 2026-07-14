@@ -71,3 +71,19 @@ fi
 if grep -Fq ' send-to-group ' "$log"; then
   fail 'explicit sync sent a message'
 fi
+
+: >"$log"
+status=0
+bash "$signal_send" reset-sessions || status=$?
+if [[ "$status" -ne 0 ]]; then
+  fail "reset-sessions exited $status"
+fi
+if ! grep -Fq ' reset-sessions' "$log"; then
+  fail 'reset-sessions did not call the Presage reset command'
+fi
+if [[ "$(wc -l <"$log")" -ne 1 ]]; then
+  fail 'reset-sessions invoked more than one Presage command'
+fi
+if grep -Eq ' (sync-contacts|sync|send-to-group|link-device|unlink-device|whoami)( |$)' "$log"; then
+  fail 'reset-sessions invoked receive, synchronization, send, link, unlink, or identity output'
+fi
