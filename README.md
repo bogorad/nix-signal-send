@@ -125,6 +125,11 @@ printf '%s\n' "hello from stdin" | signal-send
 signal-send --attach /tmp/rebuild.log "log attached"
 ```
 
+Messages longer than 2000 characters are sent as a text attachment. The Signal
+body becomes the first 200 characters of the original text followed by
+`[...]`, and the full message is attached so nothing is lost. User-supplied
+`--attach` paths are kept and sent together with that auto attachment.
+
 Use `SIGNAL_SEND_PROJECT` when the inferred directory name is ambiguous:
 
 ```bash

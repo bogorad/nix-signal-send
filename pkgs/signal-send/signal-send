@@ -487,8 +487,10 @@ cmd_status() {
 }
 
 cmd_send() {
-  local attachments message key key_file
+  local attachments message body key key_file message_tmp status
+  local -i message_len
   attachments=()
+  message_tmp=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -544,15 +546,45 @@ cmd_send() {
     message="$(cat)"
   fi
 
+  # One trailing newline is common from pipes; strip before length checks.
+  if [[ "$message" == *$'\n' ]]; then
+    message="${message%$'\n'}"
+  fi
+
   if [[ -z "$message" ]]; then
     printf 'signal-send: empty message\n' >&2
     return 64
   fi
 
+  body="$message"
+  message_len=${#message}
+  if ((message_len > 2000)); then
+    message_tmp="$(mktemp "${TMPDIR:-/tmp}/signal-send-message.XXXXXX.txt")" || return $?
+    if ! chmod 0600 "$message_tmp"; then
+      status=$?
+      rm -f "$message_tmp"
+      return "$status"
+    fi
+    if ! printf '%s' "$message" >"$message_tmp"; then
+      status=$?
+      rm -f "$message_tmp"
+      return "$status"
+    fi
+    body="${message:0:200}[...]"
+    attachments+=(--attach "$message_tmp")
+    printf 'signal-send: message length %d > 2000; sending full text as attachment\n' "$message_len" >&2
+  fi
+
+  status=0
   presage send-to-group \
     --master-key "$key" \
-    --message "$message" \
-    "${attachments[@]}"
+    --message "$body" \
+    "${attachments[@]}" || status=$?
+
+  if [[ -n "$message_tmp" ]]; then
+    rm -f "$message_tmp"
+  fi
+  return "$status"
 }
 
 main() {
