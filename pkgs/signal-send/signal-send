@@ -8,6 +8,7 @@ project_id=""
 group_key_file=""
 legacy_group_key_file=""
 group_key_source="project"
+message_tmp=""
 
 usage() {
   cat >&2 <<'USAGE'
@@ -373,28 +374,26 @@ cmd_select_group() {
     return 1
   fi
 
+  # '$?' inside 'if ! cmd' is the negated status, so these report a fixed
+  # failure code rather than capturing 0 and reporting success.
   if ! chmod 0600 "$tmp"; then
-    status=$?
     rm -f "$tmp"
     printf 'signal-send: unable to secure temporary group key file: %s\n' "$tmp" >&2
-    return "$status"
+    return 1
   fi
   if ! printf '%s\n' "$key" >"$tmp"; then
-    status=$?
     rm -f "$tmp"
     printf 'signal-send: unable to write temporary group key file: %s\n' "$tmp" >&2
-    return "$status"
+    return 1
   fi
   if ! mv -f "$tmp" "$group_key_file"; then
-    status=$?
     rm -f "$tmp"
     printf 'signal-send: unable to replace group key file: %s\n' "$group_key_file" >&2
-    return "$status"
+    return 1
   fi
   if ! chmod 0600 "$group_key_file"; then
-    status=$?
     printf 'signal-send: unable to secure group key file: %s\n' "$group_key_file" >&2
-    return "$status"
+    return 1
   fi
   if [[ ! -s "$group_key_file" ]]; then
     printf 'signal-send: group key file was not written: %s\n' "$group_key_file" >&2
@@ -486,11 +485,31 @@ cmd_status() {
   fi
 }
 
-cmd_send() {
-  local attachments message body key key_file message_tmp status
-  local -i message_len
-  attachments=()
+cleanup_message_tmp() {
+  [[ -n "$message_tmp" ]] || return 0
+  rm -f "$message_tmp"
   message_tmp=""
+}
+
+# Invoked from the signal traps installed in cmd_send.
+# shellcheck disable=SC2329
+resignal_message_tmp() {
+  cleanup_message_tmp
+  trap - "$1"
+  kill -s "$1" "$$"
+}
+
+# Signal limits the message body by encoded size, not by character count, so
+# count bytes. LC_ALL=C makes '${#1}' a byte count; 'local' restores the
+# caller's locale on return, leaving character-based slicing intact.
+message_byte_length() {
+  local LC_ALL=C
+  printf '%s\n' "${#1}"
+}
+
+cmd_send() {
+  local attachments message body key key_file message_bytes status
+  attachments=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -546,33 +565,28 @@ cmd_send() {
     message="$(cat)"
   fi
 
-  # One trailing newline is common from pipes; strip before length checks.
-  if [[ "$message" == *$'\n' ]]; then
-    message="${message%$'\n'}"
-  fi
-
   if [[ -z "$message" ]]; then
     printf 'signal-send: empty message\n' >&2
     return 64
   fi
 
   body="$message"
-  message_len=${#message}
-  if ((message_len > 2000)); then
+  message_bytes="$(message_byte_length "$message")"
+  if ((message_bytes > 2000)); then
+    # Register cleanup before the file exists so an interrupt cannot strand
+    # message plaintext in TMPDIR.
+    trap cleanup_message_tmp EXIT
+    trap 'resignal_message_tmp INT' INT
+    trap 'resignal_message_tmp TERM' TERM
+    trap 'resignal_message_tmp HUP' HUP
+
     message_tmp="$(mktemp "${TMPDIR:-/tmp}/signal-send-message.XXXXXX.txt")" || return $?
-    if ! chmod 0600 "$message_tmp"; then
-      status=$?
-      rm -f "$message_tmp"
-      return "$status"
-    fi
-    if ! printf '%s' "$message" >"$message_tmp"; then
-      status=$?
-      rm -f "$message_tmp"
-      return "$status"
-    fi
+    chmod 0600 "$message_tmp" || return $?
+    printf '%s' "$message" >"$message_tmp" || return $?
+
     body="${message:0:200}[...]"
     attachments+=(--attach "$message_tmp")
-    printf 'signal-send: message length %d > 2000; sending full text as attachment\n' "$message_len" >&2
+    printf 'signal-send: message size %d bytes > 2000; sending full text as attachment\n' "$message_bytes" >&2
   fi
 
   status=0
@@ -581,9 +595,7 @@ cmd_send() {
     --message "$body" \
     "${attachments[@]}" || status=$?
 
-  if [[ -n "$message_tmp" ]]; then
-    rm -f "$message_tmp"
-  fi
+  cleanup_message_tmp
   return "$status"
 }
 

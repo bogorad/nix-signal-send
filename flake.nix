@@ -98,6 +98,9 @@
                 pkgs.gnugrep
                 pkgs.hostname
               ];
+              # The byte-vs-character length check only distinguishes a
+              # regression under a UTF-8 locale, which the sandbox lacks.
+              LOCALE_ARCHIVE = "${pkgs.glibcLocalesUtf8}/lib/locale/locale-archive";
             }
             ''
               bash ${./tests/send-only.sh} ${./pkgs/signal-send/signal-send} ${pkgs.bash}/bin/bash

@@ -125,10 +125,17 @@ printf '%s\n' "hello from stdin" | signal-send
 signal-send --attach /tmp/rebuild.log "log attached"
 ```
 
-Messages longer than 2000 characters are sent as a text attachment. The Signal
-body becomes the first 200 characters of the original text followed by
-`[...]`, and the full message is attached so nothing is lost. User-supplied
-`--attach` paths are kept and sent together with that auto attachment.
+Messages larger than 2000 bytes are sent as a text attachment. The threshold is
+measured in UTF-8 bytes rather than characters, because that is what the Signal
+body limit applies to; 600 emoji are 600 characters but 2400 bytes. The Signal
+body becomes the first 200 characters of the original text followed by `[...]`,
+and the full message is attached so nothing is lost. User-supplied `--attach`
+paths are kept and sent together with that auto attachment.
+
+That attachment is a plain `.txt` file, so recipients see a downloadable file
+rather than Signal's native inline long-message rendering. Native rendering
+requires the attachment to be sent as `text/x-signal-plain`, which `presage-cli`
+does not expose; it derives the content type from the file extension.
 
 Use `SIGNAL_SEND_PROJECT` when the inferred directory name is ambiguous:
 
