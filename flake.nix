@@ -1,7 +1,7 @@
 {
   description = "NixOS package and module for sending Signal group messages";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
   outputs =
     { self, nixpkgs }:
@@ -25,13 +25,11 @@
       packages = forAllSystems (
         pkgs:
         let
-          presage-cli = pkgs.callPackage ./pkgs/presage-cli { };
-          signal-send = pkgs.callPackage ./pkgs/signal-send {
-            inherit presage-cli;
-          };
+          signal-send = pkgs.callPackage ./pkgs/signal-send { };
         in
         {
-          inherit presage-cli signal-send;
+          inherit signal-send;
+          inherit (pkgs) signal-cli;
           default = signal-send;
         }
       );
@@ -76,7 +74,8 @@
             service = moduleSystem.config.systemd.services.signal-send-sync;
             timer = moduleSystem.config.systemd.timers.signal-send-sync;
           in
-          assert service.unitConfig.ConditionPathExists == "/var/lib/signal-send/cli.db3";
+          assert
+            service.unitConfig.ConditionPathExists == "/var/lib/signal-send/signal-cli/data/accounts.json";
           assert pkgs.lib.hasSuffix " sync" service.serviceConfig.ExecStart;
           assert timer.timerConfig.OnUnitActiveSec == "5min";
           pkgs.runCommand "signal-send-module-sync-timer" { } ''
@@ -94,9 +93,11 @@
               nativeBuildInputs = [
                 pkgs.bash
                 pkgs.coreutils
+                pkgs.diffutils
                 pkgs.gawk
                 pkgs.gnugrep
                 pkgs.hostname
+                pkgs.jq
               ];
               # The byte-vs-character length check only distinguishes a
               # regression under a UTF-8 locale, which the sandbox lacks.

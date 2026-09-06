@@ -1,230 +1,122 @@
 # nix-signal-send
 
-`nix-signal-send` packages a send-only Signal group message helper for NixOS.
-It builds `presage-cli` from a pinned upstream revision and wraps it with a
-`signal-send` command.
+`signal-send` is a Bash compatibility wrapper around nixpkgs' `signal-cli`.
+The flake declares `nixpkgs-unstable`; consumers should make its `nixpkgs` input
+follow their existing unstable input. There is no custom signal-cli build.
 
-The default model is one Signal linked device per user/host, with separate
-project targets stored in local user state:
+## Migration from Presage
 
-```text
-~/.local/state/signal-send/
-  cli.db3
-  projects/
-    edgeiq/group_master_key
-    artwalls-app/group_master_key
-```
+The new backend needs its own linked-device registration and group selection.
+Presage's SQLite database and hex group master keys cannot be used as signal-cli
+account state or base64 group IDs. The wrapper leaves the old files intact.
+It does not silently fall back to them or migrate protocol sessions.
 
-The send path is not a daemon:
-
-```text
-signal-send "alert text"
-  -> opens the shared local presage SQLite linked-device DB
-  -> resolves the current project id
-  -> reads that project's selected group master key
-  -> connects to Signal
-  -> sends the message
-  -> exits
-```
-
-Normal sends do not synchronize first. Run `signal-send sync` explicitly, or
-schedule it separately, to refresh contacts and drain pending linked-device
-messages without adding maintenance latency or failure modes to notification
-delivery.
-
-If this linked device has stale protocol sessions with another device on the
-same account, run `signal-send reset-sessions`. It clears only those local
-sessions through Presage so the next send establishes fresh sessions. It does
-not receive messages, synchronize contacts, or unlink the device.
-
-## Device Onboarding
-
-Device onboarding is the original Signal secondary-device protocol. It should
-happen once for each user/host pair:
+After installing the updated package, run as the sending user:
 
 ```bash
 signal-send setup-device
+SIGNAL_SEND_PROJECT=my-project signal-send setup-project
 ```
 
-That command creates the shared state directory, starts Signal secondary-device
-linking, and prints a QR code. Scan it from Signal on your phone:
+Scan the QR code with Signal on the primary phone under Settings → Linked
+devices. Setup links a secondary device; it never registers or replaces the
+primary account. An existing local signal-cli account makes setup idempotent,
+but local account presence does not prove that the phone still trusts it.
+If the linked-device limit is reached, review devices on the phone yourself.
+
+Select each project's destination again from the numbered group list. Group
+IDs come from `signal-cli --output json listGroups`; the wrapper never parses
+human-readable group listings. Names containing newlines or tabs remain one
+menu entry. Only groups where the account is a member and is not blocking the
+group are offered.
+
+State defaults to:
 
 ```text
-Signal -> Settings -> Linked devices -> Link new device
+~/.local/state/signal-send/
+  signal-cli/                  # new linked-device state
+  projects/<project>/group_id  # new base64 target
+  cli.db3                      # existing Presage state, left untouched
+  projects/<project>/group_master_key  # existing target, left untouched
 ```
 
-After linking, the command performs the initial sync. This step creates the
-shared presage SQLite DB:
+Keep mutable device state outside Git and the Nix store. The dedicated directory
+is intended for exactly one account per sender user/host.
 
-```text
-~/.local/state/signal-send/cli.db3
-```
-
-Do not put this DB in Git, SOPS, or the Nix store. It is mutable linked-device
-state.
-
-## Project Onboarding
-
-Project onboarding selects the Signal group for the current project:
-
-```bash
-cd ~/git/edgeiq
-signal-send setup-project
-```
-
-The project id is resolved in this order:
-
-```text
-SIGNAL_SEND_PROJECT
-nearest .git root basename
-current directory basename
-```
-
-If the linked device already knows groups, setup asks you to choose one. If no
-groups are known yet, it enters discovery mode and asks you to send a small
-message from your phone into the target group so the linked device learns the
-metadata.
-
-The selected group key is stored under user state:
-
-```text
-~/.local/state/signal-send/projects/<project>/group_master_key
-```
-
-For the common local workflow, there is no SOPS step and no project-local secret
-file.
-
-## Quick Start
-
-From any project directory:
-
-```bash
-signal-send setup
-signal-send "hello from this project"
-```
-
-`setup` runs device onboarding first, then project onboarding. The device step
-is idempotent; once the shared DB is linked, it will not create another Signal
-linked device.
-
-## Commands
+## Commands and environment
 
 ```bash
 signal-send setup
 signal-send setup-device
 signal-send setup-project
 signal-send sync
-signal-send reset-sessions
 signal-send status
 signal-send projects
 signal-send groups
 signal-send select-group
 signal-send discover-group
-signal-send "hello from NixOS"
-printf '%s\n' "hello from stdin" | signal-send
-signal-send --attach /tmp/rebuild.log "log attached"
+signal-send 'hello'
+printf '%s\n' 'hello from stdin' | signal-send
+signal-send --attach /tmp/report.md 'report attached'
 ```
 
-Messages larger than 2000 bytes are sent as a text attachment. The threshold is
-measured in UTF-8 bytes rather than characters, because that is what the Signal
-body limit applies to; 600 emoji are 600 characters but 2400 bytes. The Signal
-body becomes the first 200 characters of the original text followed by `[...]`,
-and the full message is attached so nothing is lost. User-supplied `--attach`
-paths are kept and sent together with that auto attachment.
+`setup` combines device and project setup. `link` links only the device.
+`reset-sessions` returns an explicit unsupported-operation error: the old
+Presage-local reset has no equivalent here and is not emulated with a destructive
+account operation.
 
-That attachment is a plain `.txt` file, so recipients see a downloadable file
-rather than Signal's native inline long-message rendering. Native rendering
-requires the attachment to be sent as `text/x-signal-plain`, which `presage-cli`
-does not expose; it derives the content type from the file extension.
+The project comes from `SIGNAL_SEND_PROJECT`, then the nearest Git root basename,
+then the working-directory basename. `SIGNAL_SEND_STATE_DIR` overrides the state
+root; `SIGNAL_SEND_DEVICE_NAME` overrides the linked-device name.
+`SIGNAL_SEND_DISCOVER_TIMEOUT` defaults to 120 seconds.
 
-Use `SIGNAL_SEND_PROJECT` when the inferred directory name is ambiguous:
+`SIGNAL_SEND_GROUP_KEY_FILE` retains its existing spelling for service callers,
+but its content must now be a signal-cli base64 group ID. A Presage hex key is
+rejected. `SIGNAL_SEND_DB` is rejected with migration instructions.
+
+Sends invoke `signal-cli send` directly and preserve its failure status. They do
+not request sync or receive first. `sync` separately requests contact/group data
+from the primary device and receives pending messages with a five-second idle
+timeout. Incoming message bodies are discarded from sync output; errors remain
+visible. signal-cli owns account locking: overlapping CLI operations can wait
+for its lock. This wrapper does not claim immediate dispatch during a receive.
+A continuous-receive daemon is a separate design, not installed by this package.
+
+Messages over 2000 UTF-8 bytes retain the existing behavior: a 200-character
+preview plus a temporary text attachment containing the full original body.
+Explicit attachments are preserved alongside it. Temporary message files are
+private and cleaned after success, failure, or interruption. This wrapper does
+not add Markdown-to-Signal styling or native inline long-message rendering.
+
+## NixOS module
+
+The flake exports `nixosModules.default`. Set `services.signal-send.enable = true`
+and optionally `project`, `stateDir`, `user`, `group`, `createUser`, or `package`.
+It installs a separate sync timer every five minutes, conditional on signal-cli's
+local account index. Run setup as the configured state-owning user after
+activation. The module defaults to `/var/lib/signal-send`, user `signal-send`,
+and project `default`.
+
+The existing `services.signal-send.groupKeyFile` option accepts a runtime file
+containing the **new base64 group ID**. For a managed secret, update its encrypted
+source explicitly; `select-group` refuses to overwrite a symlinked target.
+
+The package must be built and installed, the device linked, and the group
+reselected before live sending can work. A successful send exit code alone is
+not proof that the recipient's phone and linked desktop displayed the message.
+
+## Verification
+
+`shellcheck pkgs/signal-send/signal-send tests/send-only.sh` checks shell syntax
+and common errors. The offline contract test runs against a strict fake
+signal-cli and exercises JSON group selection, attachments, input, migration
+rejection, and failure statuses:
 
 ```bash
-SIGNAL_SEND_PROJECT=edgeiq-prod signal-send setup-project
-SIGNAL_SEND_PROJECT=edgeiq-prod signal-send "prod deploy failed"
+bash tests/send-only.sh pkgs/signal-send/signal-send "$(command -v bash)"
 ```
 
-Use `SIGNAL_SEND_GROUP_KEY_FILE` only when an external runtime secret or service
-wrapper should supply the group key path directly.
+Flake checks also cover packaging and module timer wiring. Follow the consuming
+repository's approval gate before Nix builds or runtime Signal operations.
 
-## NixOS Module
-
-This repository provides `nixosModules.default`.
-
-Example shape:
-
-```nix
-{
-  inputs.nix-signal-send.url = "github:OWNER/nix-signal-send";
-
-  outputs = { nixpkgs, nix-signal-send, ... }: {
-    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
-      modules = [
-        nix-signal-send.nixosModules.default
-        {
-          services.signal-send = {
-            enable = true;
-            project = "nightly-alerts";
-          };
-        }
-      ];
-    };
-  };
-}
-```
-
-This repo does not wire the module into any host configuration by itself.
-When enabled by a host, the module installs a system timer that runs
-`signal-send sync` two minutes after boot and every five minutes thereafter,
-with up to 15 seconds of randomized delay. Normal sends remain sync-free.
-
-After applying the module in a host configuration, initialize the linked-device
-state as the configured state owner:
-
-```bash
-sudo -u signal-send -H signal-send setup
-```
-
-If you set `services.signal-send.user` to another user, run setup as that user.
-If you set `services.signal-send.project`, the wrapper exports
-`SIGNAL_SEND_PROJECT` so the project group key lives under:
-
-```text
-/var/lib/signal-send/projects/<project>/group_master_key
-```
-
-The module defaults `project` to `default` when `groupKeyFile` is unset, so
-NixOS usage does not depend on the caller's current working directory.
-
-Older state using a single key at `stateDir/group_master_key` is accepted only
-for the `default` project. Named projects must select their own group under
-`stateDir/projects/<project>/group_master_key` so project sends cannot silently
-route to the wrong Signal group.
-
-## SOPS
-
-SOPS is not part of the normal local project workflow.
-
-Use SOPS only when a group key must travel with declarative host configuration
-or be restored on another host. In that case, expose the decrypted value as a
-runtime file and set:
-
-```nix
-services.signal-send.groupKeyFile =
-  "/run/secrets/signal-send/groups/default/master_key";
-```
-
-When `groupKeyFile` points at a managed secret such as `/run/secrets/...`, do
-not run `signal-send select-group` against that path. Select the group with a
-normal local project target first, then update the encrypted secret source.
-
-## Security Notes
-
-`presage-cli send-to-group` currently accepts the group key and message as
-command-line arguments. That means they may be visible briefly to same-host
-process inspectors. Use a dedicated local user for service-style usage on shared
-machines, and treat a future direct Rust CLI with file/stdin-only secret passing
-as the hardening path.
-
-The selected group key identifies the Signal V2 group for this linked device.
-Treat it as secret operational material.
+CLI contract: https://github.com/AsamK/signal-cli/blob/master/man/signal-cli.1.adoc

@@ -1,329 +1,157 @@
 #!/usr/bin/env bash
-
-fail() {
-  printf 'send-only test: %s\n' "$*" >&2
-  exit 1
-}
-
-note() {
-  printf 'send-only test: %s\n' "$*" >&2
-}
-
-message_tmp_files_exist() {
-  compgen -G "$TMPDIR/signal-send-message.*.txt" >/dev/null
-}
-
-if [[ $# -ne 2 ]]; then
-  fail 'expected paths to signal-send source script and Bash'
-fi
-
+fail() { printf 'signal-cli contract: %s\n' "$*" >&2; exit 1; }
+[[ $# -eq 2 ]] || fail 'expected wrapper and Bash paths'
 signal_send=$1
 test_bash=$2
 root="$(mktemp -d)" || exit $?
-cleanup() {
-  rm -rf "$root"
-}
+cleanup() { rm -rf "$root"; }
 trap cleanup EXIT
-
-bin_dir="$root/bin"
-state_dir="$root/state"
-project_dir="$state_dir/projects/nix-config"
-log="$root/presage.log"
-mkdir -p "$bin_dir" "$project_dir" "$root/home" || exit $?
-printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
-  >"$project_dir/group_master_key" || exit $?
-
-fake_presage="$bin_dir/presage-cli"
-{
-  printf '%s\n' "#!$test_bash"
-  cat <<'EOF'
-printf '%s\n' "$*" >>"$PRESAGE_FAKE_LOG"
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == "--attach" ]]; then
-    shift
-    if [[ -n "${1:-}" && -f "$1" ]]; then
-      printf 'ATTACH_FILE %s\n' "$1" >>"$PRESAGE_FAKE_LOG"
-      cat "$1" >>"$PRESAGE_FAKE_LOG"
-      printf '\nATTACH_END\n' >>"$PRESAGE_FAKE_LOG"
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
+mkdir -p "$root/bin" "$root/state/projects/test" "$root/tmp" || exit $?
+group_id='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+printf '%s\n' "$group_id" >"$root/state/projects/test/group_id" || exit $?
+cat >"$root/bin/signal-cli" <<'MOCK'
+#!/usr/bin/env bash
+[[ "$1" == --config && "$2" == "$SIGNAL_SEND_STATE_DIR/signal-cli" ]] || exit 90
+shift 2
+if [[ "$1" == --output ]]; then
+  [[ "$2" == json ]] || exit 91
+  shift 2
+fi
+command=$1
+shift
+printf '%s\n' "$command" >>"$FAKE_LOG"
+case "$command" in
+  listAccounts) printf '%s\n' '[{"number":"+12025550123"}]' ;;
+  listGroups)
+    [[ "${FAKE_BAD_JSON:-0}" == 0 ]] || { printf 'broken'; exit 0; }
+    printf '%s\n' '[{"id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","name":"a group / revision 5\nwith tabs\tand quotes\"","isMember":true,"isBlocked":false},{"id":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=","name":"another","isMember":true,"isBlocked":false}]'
+    ;;
+  sendSyncRequest) exit "${FAKE_SYNC_STATUS:-0}" ;;
+  receive)
+    [[ "$*" == '--timeout 5 --ignore-attachments' ]] || exit 92
+    printf 'PRIVATE INCOMING MESSAGE\n'
+    exit "${FAKE_RECEIVE_STATUS:-0}"
+    ;;
+  send)
+    [[ "$1" == --group-id ]] || exit 93
+    printf '%s' "$2" >"$FAKE_CAPTURE/group"
+    shift 2
+    [[ "$1" == --message ]] || exit 94
+    printf '%s' "$2" >"$FAKE_CAPTURE/body"
+    shift 2
+    if [[ $# -gt 0 ]]; then
+      [[ "$1" == --attachment ]] || exit 95
+      shift
+      index=0
+      for file in "$@"; do
+        [[ -f "$file" ]] || exit 96
+        index=$((index + 1))
+        cp -- "$file" "$FAKE_CAPTURE/attachment-$index" || exit $?
+      done
     fi
-  fi
-  shift || true
-done
-exit 0
-EOF
-} >"$fake_presage" || exit $?
-chmod 0755 "$fake_presage" || exit $?
-
-PATH="$bin_dir:$PATH"
-export PATH
-HOME="$root/home"
-export HOME
-SIGNAL_SEND_STATE_DIR="$state_dir"
-export SIGNAL_SEND_STATE_DIR
-SIGNAL_SEND_PROJECT='nix-config'
-export SIGNAL_SEND_PROJECT
-PRESAGE_FAKE_LOG="$log"
-export PRESAGE_FAKE_LOG
+    exit "${FAKE_SEND_STATUS:-0}"
+    ;;
+  *) exit 97 ;;
+esac
+MOCK
+chmod 700 "$root/bin/signal-cli" || exit $?
+PATH="$root/bin:$PATH"
+SIGNAL_SEND_STATE_DIR="$root/state"
+SIGNAL_SEND_PROJECT='test'
+FAKE_LOG="$root/calls"
+FAKE_CAPTURE="$root/capture"
 TMPDIR="$root/tmp"
-export TMPDIR
-mkdir -p "$TMPDIR" || exit $?
-
-status=0
-bash "$signal_send" 'hello' || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "send exited $status"
-fi
-if ! grep -Fq ' send-to-group ' "$log"; then
-  fail 'send did not call send-to-group'
-fi
-if grep -Fq ' --attach ' "$log"; then
-  fail 'short send used an unexpected attachment'
-fi
-if grep -Fq ' sync-contacts' "$log" || grep -Fq ' sync --stop-after-empty-queue' "$log"; then
-  fail 'send invoked synchronization'
-fi
-
-: >"$log"
-status=0
-bash "$signal_send" sync || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "explicit sync exited $status"
-fi
-if ! grep -Fq ' sync-contacts' "$log"; then
-  fail 'explicit sync did not synchronize contacts'
-fi
-if ! grep -Fq ' sync --stop-after-empty-queue' "$log"; then
-  fail 'explicit sync did not drain the linked-device queue'
-fi
-if grep -Fq ' send-to-group ' "$log"; then
-  fail 'explicit sync sent a message'
-fi
-
-: >"$log"
-status=0
-bash "$signal_send" reset-sessions || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "reset-sessions exited $status"
-fi
-if ! grep -Fq ' reset-sessions' "$log"; then
-  fail 'reset-sessions did not call the Presage reset command'
-fi
-if [[ "$(wc -l <"$log")" -ne 1 ]]; then
-  fail 'reset-sessions invoked more than one Presage command'
-fi
-if grep -Eq ' (sync-contacts|sync|send-to-group|link-device|unlink-device|whoami)( |$)' "$log"; then
-  fail 'reset-sessions invoked receive, synchronization, send, link, unlink, or identity output'
-fi
-
-# Exactly 2000 chars stays in the body with no auto-attachment.
-: >"$log"
-msg_2000="$(printf '%*s' 2000 '' | tr ' ' 'a')"
-status=0
-bash "$signal_send" "$msg_2000" || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "2000-char send exited $status"
-fi
-if ! grep -Fq " --message $msg_2000" "$log"; then
-  fail '2000-char send did not pass the full body'
-fi
-if grep -Fq ' --attach ' "$log"; then
-  fail '2000-char send used an unexpected attachment'
-fi
-
-# Over 2000 chars: preview body + full text attachment.
-: >"$log"
-msg_2001="$(printf '%*s' 2001 '' | tr ' ' 'b')"
-preview="${msg_2001:0:200}[...]"
-status=0
-bash "$signal_send" "$msg_2001" || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "2001-char send exited $status"
-fi
-if ! grep -Fq " --message $preview" "$log"; then
-  fail '2001-char send did not use the 200-char preview body'
-fi
-if ! grep -Fq ' --attach ' "$log"; then
-  fail '2001-char send did not attach the full message'
-fi
-if ! grep -Fq "ATTACH_FILE " "$log"; then
-  fail 'fake presage did not see the auto attachment file'
-fi
-attach_body="$(awk '/^ATTACH_FILE /{flag=1; next} /^ATTACH_END$/{flag=0} flag' "$log")"
-if [[ "$attach_body" != "$msg_2001" ]]; then
-  fail 'auto attachment content did not match the full message'
-fi
-# Temp attachment must be removed after send.
-if message_tmp_files_exist; then
-  fail 'auto attachment temp file was not cleaned up'
-fi
-
-# User --attach is preserved alongside the auto full-message attach.
-: >"$log"
-user_attach="$root/user-note.txt"
-printf '%s\n' 'user note' >"$user_attach" || exit $?
-status=0
-bash "$signal_send" --attach "$user_attach" "$msg_2001" || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "long send with user attach exited $status"
-fi
-if ! grep -Fq -- "--attach $user_attach" "$log"; then
-  fail 'user --attach was not passed through on long send'
-fi
-attach_flags="$(grep -o -- '--attach' "$log" | wc -l)"
-if [[ "$attach_flags" -lt 2 ]]; then
-  fail "long send with user attach did not pass two --attach flags (got $attach_flags)"
-fi
-
-# The Signal body limit is on encoded bytes, not characters. 600 copies of
-# U+1F600 are 600 characters but 2400 bytes, so they must take the attachment
-# path. Under a UTF-8 locale a character-counting implementation sees 600 and
-# skips it, which is what this checks.
-msg_emoji="$(printf '\xf0\x9f\x98\x80%.0s' {1..600})"
-emoji_bytes="$(printf '%s' "$msg_emoji" | wc -c)"
-if [[ "$emoji_bytes" -ne 2400 ]]; then
-  fail "multibyte fixture is $emoji_bytes bytes, expected 2400"
-fi
-
-# Probe the property the check depends on directly: whether '${#x}' counts a
-# 2-byte sequence as one character. This avoids needing the 'locale' binary.
-utf8_probe() {
-  LC_ALL="$1" "$test_bash" <<'PROBE'
-x="$(printf '\xc3\xa9')"
-[[ "${#x}" -eq 1 ]]
-PROBE
+export PATH SIGNAL_SEND_STATE_DIR SIGNAL_SEND_PROJECT FAKE_LOG FAKE_CAPTURE TMPDIR
+unset SIGNAL_SEND_DB SIGNAL_SEND_GROUP_KEY_FILE
+reset_capture() {
+  rm -rf "$FAKE_CAPTURE" || exit $?
+  mkdir "$FAKE_CAPTURE" || exit $?
+  : >"$FAKE_LOG"
 }
-
-utf8_locale=""
-for candidate in C.UTF-8 en_US.UTF-8; do
-  if utf8_probe "$candidate" 2>/dev/null; then
-    utf8_locale="$candidate"
-    break
-  fi
-done
-if [[ -z "$utf8_locale" ]]; then
-  note 'no UTF-8 locale available; byte-vs-character check is weaker here'
-fi
-
-: >"$log"
+invoke() { "$test_bash" "$signal_send" "$@"; }
+assert_no_message_tmp() {
+  local file
+  for file in "$TMPDIR"/signal-send-message.*; do
+    [[ ! -e "$file" ]] || fail 'plaintext temporary file left'
+  done
+}
+reset_capture
+invoke hello || fail 'short send failed'
+[[ "$(cat "$FAKE_LOG")" == send ]] || fail 'send performed maintenance'
+[[ "$(cat "$FAKE_CAPTURE/group")" == "$group_id" ]] || fail 'wrong target'
+[[ "$(cat "$FAKE_CAPTURE/body")" == hello ]] || fail 'body changed'
+[[ ! -e "$FAKE_CAPTURE/attachment-1" ]] || fail 'unexpected attachment'
+reset_capture
+invoke link >/dev/null || fail 'idempotent link failed'
+[[ "$(cat "$FAKE_LOG")" == listAccounts ]] || fail 'existing account was relinked'
+reset_capture
 status=0
-LC_ALL="${utf8_locale:-${LC_ALL:-C}}" bash "$signal_send" "$msg_emoji" || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "multibyte send exited $status"
-fi
-if ! grep -Fq ' --attach ' "$log"; then
-  fail 'multibyte message over 2000 bytes did not use an attachment'
-fi
-if ! grep -Fq '[...]' "$log"; then
-  fail 'multibyte long send did not use the preview body'
-fi
-if message_tmp_files_exist; then
-  fail 'multibyte long send left a temp file behind'
-fi
-
-# 400 copies are 1600 bytes and must stay inline.
-: >"$log"
-msg_emoji_short="$(printf '\xf0\x9f\x98\x80%.0s' {1..400})"
+invoke '' >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 && ! -s "$FAKE_LOG" ]] || fail 'empty message sent'
 status=0
-LC_ALL="${utf8_locale:-${LC_ALL:-C}}" bash "$signal_send" "$msg_emoji_short" || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "short multibyte send exited $status"
-fi
-if grep -Fq ' --attach ' "$log"; then
-  fail 'multibyte message under 2000 bytes used an unexpected attachment'
-fi
-
-# A failed chmod must abort the send. '$?' inside 'if ! cmd' is the negated
-# status, so capturing it there yields 0 and reports success.
-shadow_dir="$root/shadow"
-mkdir -p "$shadow_dir" || exit $?
-printf '%s\n' "#!$test_bash" 'exit 1' >"$shadow_dir/chmod" || exit $?
-chmod 0755 "$shadow_dir/chmod" || exit $?
-
-: >"$log"
+invoke --attach "$root/missing.txt" hello >/dev/null 2>&1 || status=$?
+[[ $status -eq 66 && ! -s "$FAKE_LOG" ]] || fail 'missing attachment sent'
+reset_capture
+output="$(invoke sync)" || fail 'sync failed'
+[[ -z "$output" ]] || fail 'sync exposed received content'
+[[ "$(cat "$FAKE_LOG")" == $'sendSyncRequest\nreceive' ]] || fail 'sync sequence wrong'
+reset_capture
 status=0
-PATH="$shadow_dir:$PATH" bash "$signal_send" "$msg_2001" || status=$?
-if [[ "$status" -eq 0 ]]; then
-  fail 'long send reported success after chmod failed on the temp file'
-fi
-if grep -Fq ' send-to-group ' "$log"; then
-  fail 'long send called send-to-group after chmod failed'
-fi
-if message_tmp_files_exist; then
-  fail 'temp file survived a failed chmod'
-fi
-
-# An unwritable TMPDIR must fail the same way.
-: >"$log"
-ro_tmp="$root/ro-tmp"
-mkdir -p "$ro_tmp" || exit $?
-chmod 0500 "$ro_tmp" || exit $?
+FAKE_SYNC_STATUS=5 invoke sync >/dev/null 2>&1 || status=$?
+[[ $status -eq 5 && "$(cat "$FAKE_LOG")" == sendSyncRequest ]] || fail 'sync request failure masked'
 status=0
-TMPDIR="$ro_tmp" bash "$signal_send" "$msg_2001" || status=$?
-chmod 0700 "$ro_tmp" || exit $?
-if [[ "$status" -eq 0 ]]; then
-  fail 'long send reported success when the temp file could not be created'
-fi
-if grep -Fq ' send-to-group ' "$log"; then
-  fail 'long send called send-to-group after mktemp failed'
-fi
-
-# An interrupted long send must not strand message plaintext in TMPDIR.
-: >"$log"
-slow_dir="$root/slow"
-mkdir -p "$slow_dir" || exit $?
-{
-  printf '%s\n' "#!$test_bash"
-  cat <<'EOF'
-printf '%s\n' "$*" >>"$PRESAGE_FAKE_LOG"
-sleep 3
-EOF
-} >"$slow_dir/presage-cli" || exit $?
-chmod 0755 "$slow_dir/presage-cli" || exit $?
-
-PATH="$slow_dir:$PATH" bash "$signal_send" "$msg_2001" &
-send_pid=$!
-waited=0
-while [[ ! -s "$log" ]] && ((waited < 100)); do
-  sleep 0.1
-  waited=$((waited + 1))
-done
-if [[ ! -s "$log" ]]; then
-  kill "$send_pid" 2>/dev/null
-  wait "$send_pid" 2>/dev/null
-  fail 'interrupt fixture never reached presage'
-fi
-if ! message_tmp_files_exist; then
-  kill "$send_pid" 2>/dev/null
-  wait "$send_pid" 2>/dev/null
-  fail 'interrupt fixture never created a temp message file'
-fi
-kill -TERM "$send_pid" 2>/dev/null
-wait "$send_pid" 2>/dev/null
-if message_tmp_files_exist; then
-  fail 'interrupted long send left message plaintext in TMPDIR'
-fi
-
-# A newline supplied as an argument is a real message, not an empty one.
-: >"$log"
+FAKE_RECEIVE_STATUS=3 invoke sync >/dev/null 2>&1 || status=$?
+[[ $status -eq 3 ]] || fail 'receive failure masked'
+reset_capture
 status=0
-bash "$signal_send" $'\n' || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "newline-only argument was rejected (exit $status)"
-fi
-if ! grep -Fq ' send-to-group ' "$log"; then
-  fail 'newline-only argument did not reach send-to-group'
-fi
-
-# Piped input still sends its body; command substitution drops the newline.
-: >"$log"
+invoke reset-sessions >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 && ! -s "$FAKE_LOG" ]] || fail 'unsupported reset changed state'
+reset_capture
+printf '2\n' | invoke select-group >/dev/null || fail 'group selection failed'
+[[ "$(cat "$SIGNAL_SEND_STATE_DIR/projects/test/group_id")" == BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA= ]] || fail 'multiline name broke indexing'
 status=0
-printf '%s\n' 'piped hello' | bash "$signal_send" || status=$?
-if [[ "$status" -ne 0 ]]; then
-  fail "piped send exited $status"
-fi
-if ! grep -Fq ' --message piped hello' "$log"; then
-  fail 'piped send did not pass the message body'
-fi
-if grep -Fq ' --attach ' "$log"; then
-  fail 'piped short send used an unexpected attachment'
-fi
+FAKE_BAD_JSON=1 invoke groups >/dev/null 2>&1 || status=$?
+[[ $status -ne 0 ]] || fail 'malformed group JSON accepted'
+printf '%s\n' "$group_id" >"$SIGNAL_SEND_STATE_DIR/projects/test/group_id" || exit $?
+reset_capture
+printf 'piped hello\n' | invoke || fail 'stdin send failed'
+[[ "$(cat "$FAKE_CAPTURE/body")" == 'piped hello' ]] || fail 'stdin changed'
+reset_capture
+printf '%s\n' 'first file' >"$root/first file.txt" || exit $?
+printf '%s\n' 'second file' >"$root/second.txt" || exit $?
+invoke --attach "$root/first file.txt" --attach "$root/second.txt" hello || fail 'attachments failed'
+cmp "$root/first file.txt" "$FAKE_CAPTURE/attachment-1" || fail 'first attachment changed'
+cmp "$root/second.txt" "$FAKE_CAPTURE/attachment-2" || fail 'second attachment lost'
+reset_capture
+printf -v message '%2000s' ''
+message=${message// /a}
+invoke "$message" || fail '2000 byte send failed'
+[[ ! -e "$FAKE_CAPTURE/attachment-1" ]] || fail 'boundary message attached'
+message+=a
+invoke --attach "$root/first file.txt" "$message" || fail 'long send failed'
+[[ "$(cat "$FAKE_CAPTURE/attachment-2")" == "$message" ]] || fail 'long message truncated'
+[[ "$(cat "$FAKE_CAPTURE/body")" == "${message:0:200}[...]" ]] || fail 'preview wrong'
+assert_no_message_tmp
+reset_capture
+printf -v emoji '\xf0\x9f\x98\x80%.0s' {1..600}
+invoke "$emoji" || fail 'UTF-8 send failed'
+[[ "$(cat "$FAKE_CAPTURE/attachment-1")" == "$emoji" ]] || fail 'UTF-8 long message lost'
+reset_capture
+status=0
+FAKE_SEND_STATUS=4 invoke "$message" || status=$?
+[[ $status -eq 4 ]] || fail 'send failure masked'
+assert_no_message_tmp
+reset_capture
+printf '%064d\n' 0 >"$SIGNAL_SEND_STATE_DIR/projects/test/group_id" || exit $?
+status=0
+invoke hello >/dev/null 2>&1 || status=$?
+[[ $status -eq 65 && ! -s "$FAKE_LOG" ]] || fail 'Presage master key accepted as group ID'
+rm "$SIGNAL_SEND_STATE_DIR/projects/test/group_id" || exit $?
+printf '%064d\n' 0 >"$SIGNAL_SEND_STATE_DIR/projects/test/group_master_key" || exit $?
+status=0
+invoke hello >/dev/null 2>&1 || status=$?
+[[ $status -eq 64 && ! -s "$FAKE_LOG" ]] || fail 'legacy group target silently reused'
+printf 'signal-cli contract checks passed\n'

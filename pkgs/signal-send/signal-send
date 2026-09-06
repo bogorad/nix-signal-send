@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
 state_dir="${SIGNAL_SEND_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/signal-send}"
-db="${SIGNAL_SEND_DB:-$state_dir/cli.db3}"
+cli_dir="$state_dir/signal-cli"
 device_name="${SIGNAL_SEND_DEVICE_NAME:-$(hostname)-signal-send}"
 discover_timeout="${SIGNAL_SEND_DISCOVER_TIMEOUT:-120}"
 project_id=""
 group_key_file=""
-legacy_group_key_file=""
 group_key_source="project"
 message_tmp=""
 
@@ -87,8 +86,7 @@ configure_target() {
     group_key_file="$SIGNAL_SEND_GROUP_KEY_FILE"
   else
     group_key_source="project"
-    group_key_file="$state_dir/projects/$project_id/group_master_key"
-    legacy_group_key_file="$state_dir/group_master_key"
+    group_key_file="$state_dir/projects/$project_id/group_id"
   fi
 }
 
@@ -100,24 +98,34 @@ ensure_project_state_dir() {
   chmod 700 "$state_dir/projects" "$project_dir" || return $?
 }
 
-presage() {
-  presage-cli --sqlite-db-path "$db" "$@"
+signal() {
+  signal-cli --config "$cli_dir" "$@"
 }
 
 is_registered() {
-  presage whoami >/dev/null 2>&1
+  local accounts
+  accounts="$(signal --output json listAccounts)" || return $?
+  jq -e 'type == "array" and length == 1' <<<"$accounts" >/dev/null
 }
 
 read_group_lines() {
   local output status
-  output="$(presage list-groups 2>/dev/null)"
+  output="$(signal --output json listGroups)"
   status=$?
   if [[ "$status" -ne 0 ]]; then
     unset output
     return "$status"
   fi
 
-  awk '/^[0-9a-f]{64} / { print }' <<<"$output"
+  # Parse the machine interface. Encode labels as JSON strings so embedded
+  # newlines, tabs and terminal controls cannot become extra menu entries.
+  jq -r '
+    if type != "array" then error("expected group array") else . end |
+    .[] | select(.isMember == true and .isBlocked == false and .isTerminated != true) |
+    if (.id | type) != "string" or (.name | type) != "string"
+    then error("invalid group record") else . end |
+    .id + " " + (.name | tojson)
+  ' <<<"$output"
   status=$?
   unset output
   return "$status"
@@ -144,7 +152,7 @@ group_count() {
 }
 
 group_label() {
-  printf '%s\n' "${1#* }" | awk '{ sub(/ \/ revision .*/, ""); print }'
+  printf '%s\n' "${1#* }"
 }
 
 path_has_symlink_component() {
@@ -177,39 +185,47 @@ path_has_symlink_component() {
 }
 
 active_group_key_file() {
-  if uses_legacy_group_key; then
-    printf '%s\n' "$legacy_group_key_file"
-  else
-    printf '%s\n' "$group_key_file"
-  fi
-}
-
-legacy_group_key_allowed() {
-  [[ "$group_key_source" == "project" && "$project_id" == "default" ]]
-}
-
-uses_legacy_group_key() {
-  legacy_group_key_allowed && [[ ! -s "$group_key_file" && -s "$legacy_group_key_file" ]]
+  printf '%s\n' "$group_key_file"
 }
 
 cmd_link() {
-  ensure_state_dir
-  if is_registered; then
-    printf 'signal-send: already linked at %s\n' "$db" >&2
+  local accounts count statuses line
+  ensure_state_dir || return $?
+  mkdir -p "$cli_dir" || return $?
+  chmod 700 "$cli_dir" || return $?
+  accounts="$(signal --output json listAccounts)" || return $?
+  count="$(jq -er 'if type == "array" then length else error("expected account array") end' <<<"$accounts")" || return $?
+  if (( count > 1 )); then
+    printf 'signal-send: expected one account in the dedicated signal-cli directory\n' >&2
+    return 65
+  fi
+  if (( count == 1 )); then
+    printf 'signal-send: already linked locally at %s\n' "$cli_dir" >&2
     return 0
   fi
 
-  presage link-device --device-name "$device_name" || return $?
-  chmod 600 "$db"* 2>/dev/null || true
+  signal link --name "$device_name" | while IFS= read -r line; do
+    case "$line" in
+      sgnl://linkdevice\?*|tsdevice:/*)
+        printf '%s' "$line" | qrencode -t ANSIUTF8
+        statuses=("${PIPESTATUS[@]}")
+        (( statuses[0] == 0 && statuses[1] == 0 )) || exit 1
+        ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+  statuses=("${PIPESTATUS[@]}")
+  (( statuses[0] == 0 )) || return "${statuses[0]}"
+  return "${statuses[1]}"
 }
 
 run_sync_steps() {
   local tmp status
   tmp=$1
   status=0
-  presage sync-contacts >"$tmp/sync-contacts.out" 2>"$tmp/sync-contacts.err" || status=$?
+  signal sendSyncRequest >"$tmp/sync-contacts.out" 2>"$tmp/sync-contacts.err" || status=$?
   if [[ "$status" -eq 0 ]]; then
-    presage sync --stop-after-empty-queue >"$tmp/sync.out" 2>"$tmp/sync.err" || status=$?
+    signal receive --timeout 5 --ignore-attachments > /dev/null 2>"$tmp/sync.err" || status=$?
   fi
 
   return "$status"
@@ -249,13 +265,13 @@ quiet_sync() {
 }
 
 cmd_sync() {
-  ensure_state_dir
+  ensure_state_dir || return $?
   quiet_sync
 }
 
 cmd_reset_sessions() {
-  ensure_state_dir || return $?
-  presage reset-sessions
+  printf 'signal-send: reset-sessions is Presage-specific and unavailable with signal-cli; no state changed\n' >&2
+  return 64
 }
 
 cmd_setup_device() {
@@ -298,7 +314,7 @@ cmd_projects() {
     [[ -d "$dir" ]] || continue
     found=1
     name="${dir##*/}"
-    if [[ -s "$dir/group_master_key" ]]; then
+    if [[ -s "$dir/group_id" ]]; then
       printf '%s selected\n' "$name"
     else
       printf '%s not-selected\n' "$name"
@@ -403,34 +419,24 @@ cmd_select_group() {
 }
 
 cmd_discover_group() {
-  local before after deadline pid
-  ensure_state_dir
+  local before after deadline
+  ensure_state_dir || return $?
   before="$(group_count)" || return $?
   deadline=$((SECONDS + discover_timeout))
 
   printf 'signal-send: listening for group activity for up to %s seconds\n' "$discover_timeout" >&2
   printf 'signal-send: send a small message from your phone to the target group now\n' >&2
 
-  presage sync >/dev/null 2>&1 &
-  pid="$!"
-
   while (( SECONDS < deadline )); do
-    sleep 2
-    after="$(group_count)" || {
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      return 1
-    }
+    # Finish receiving before opening the same signal-cli account for listing.
+    signal receive --timeout 2 --max-messages 100 --ignore-attachments >/dev/null || return $?
+    after="$(group_count)" || return $?
     if (( after > before )); then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
       cmd_select_group || return $?
       return 0
     fi
   done
 
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
   printf 'signal-send: no group activity discovered before timeout\n' >&2
   return 1
 }
@@ -463,7 +469,7 @@ cmd_setup() {
 }
 
 cmd_status() {
-  ensure_state_dir
+  ensure_state_dir || return $?
 
   if is_registered; then
     printf 'linked: yes\n'
@@ -473,12 +479,10 @@ cmd_status() {
 
   printf 'project: %s\n' "$project_id"
   printf 'group-key-source: %s\n' "$group_key_source"
-  printf 'db: %s\n' "$db"
+  printf 'backend: signal-cli\n'
+  printf 'data-dir: %s\n' "$cli_dir"
   printf 'group-key-file: %s\n' "$group_key_file"
-  if uses_legacy_group_key; then
-    printf 'legacy-group-key-file: %s\n' "$legacy_group_key_file"
-    printf 'group: selected (legacy fallback)\n'
-  elif [[ -s "$group_key_file" ]]; then
+  if [[ -s "$group_key_file" ]]; then
     printf 'group: selected\n'
   else
     printf 'group: not selected\n'
@@ -508,7 +512,7 @@ message_byte_length() {
 }
 
 cmd_send() {
-  local attachments message body key key_file message_bytes status
+  local attachments message body key key_file message_bytes status attachment
   attachments=()
 
   while [[ $# -gt 0 ]]; do
@@ -518,7 +522,13 @@ cmd_send() {
           printf 'signal-send: missing value for --attach\n' >&2
           return 64
         fi
-        attachments+=(--attach "$2")
+        if [[ ! -f "$2" || ! -r "$2" ]]; then
+          printf 'signal-send: attachment is not a readable file: %s\n' "$2" >&2
+          return 66
+        fi
+        # Absolute paths cannot be interpreted as signal-cli options.
+        attachment="$(realpath -- "$2")" || return $?
+        attachments+=("$attachment")
         shift 2
         ;;
       -h|--help)
@@ -544,9 +554,6 @@ cmd_send() {
   if [[ ! -s "$key_file" ]]; then
     if [[ "$group_key_source" == "project" ]]; then
       printf 'signal-send: no selected group for project %s; run signal-send setup-project or signal-send select-group\n' "$project_id" >&2
-      if [[ "$project_id" != "default" && -s "$legacy_group_key_file" ]]; then
-        printf 'signal-send: legacy key at %s is only used for project default\n' "$legacy_group_key_file" >&2
-      fi
     else
       printf 'signal-send: no selected group; check SIGNAL_SEND_GROUP_KEY_FILE\n' >&2
     fi
@@ -554,8 +561,8 @@ cmd_send() {
   fi
 
   key="$(tr -d '[:space:]' <"$key_file")"
-  if ! [[ "$key" =~ ^[0-9a-f]{64}$ ]]; then
-    printf 'signal-send: group key file is not a 64-character hex key\n' >&2
+  if ! [[ "$key" =~ ^([A-Za-z0-9+/]{22}==|[A-Za-z0-9+/]{43}=)$ ]]; then
+    printf 'signal-send: expected a base64 signal-cli group ID; reselect the group after linking signal-cli (Presage master keys are incompatible)\n' >&2
     return 65
   fi
 
@@ -585,13 +592,16 @@ cmd_send() {
     printf '%s' "$message" >"$message_tmp" || return $?
 
     body="${message:0:200}[...]"
-    attachments+=(--attach "$message_tmp")
+    attachments+=("$message_tmp")
     printf 'signal-send: message size %d bytes > 2000; sending full text as attachment\n' "$message_bytes" >&2
   fi
 
   status=0
-  presage send-to-group \
-    --master-key "$key" \
+  if (( ${#attachments[@]} > 0 )); then
+    attachments=(--attachment "${attachments[@]}")
+  fi
+  signal send \
+    --group-id "$key" \
     --message "$body" \
     "${attachments[@]}" || status=$?
 
@@ -674,6 +684,11 @@ main() {
   esac
 }
 
+if [[ -n "${SIGNAL_SEND_DB+x}" ]]; then
+  printf 'signal-send: SIGNAL_SEND_DB is Presage-specific; use SIGNAL_SEND_STATE_DIR and link signal-cli with setup-device\n' >&2
+  exit 64
+fi
+umask 077
 configure_target || exit $?
 main "$@"
 exit $?

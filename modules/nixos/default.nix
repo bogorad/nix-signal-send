@@ -7,10 +7,7 @@
 
 let
   cfg = config.services.signal-send;
-  defaultPresageCli = pkgs.callPackage ../../pkgs/presage-cli { };
-  defaultPackage = pkgs.callPackage ../../pkgs/signal-send {
-    presage-cli = defaultPresageCli;
-  };
+  defaultPackage = pkgs.callPackage ../../pkgs/signal-send { };
   configuredPackage = pkgs.writeShellScriptBin "signal-send" ''
     export SIGNAL_SEND_STATE_DIR=${lib.escapeShellArg cfg.stateDir}
     export SIGNAL_SEND_PROJECT=${lib.escapeShellArg cfg.project}
@@ -34,14 +31,14 @@ in
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/signal-send";
-      description = "Mutable presage linked-device state directory.";
+      description = "Mutable signal-cli linked-device and project state directory.";
     };
 
     groupKeyFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/run/secrets/signal-send/groups/default/master_key";
-      description = "Optional file containing the selected Signal V2 group master key.";
+      example = "/run/secrets/signal-send/groups/default/group_id";
+      description = "Optional file containing a signal-cli base64 group ID, not a Presage master key. The option name is retained for compatibility.";
     };
 
     project = lib.mkOption {
@@ -95,7 +92,7 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
 
-      unitConfig.ConditionPathExists = "${cfg.stateDir}/cli.db3";
+      unitConfig.ConditionPathExists = "${cfg.stateDir}/signal-cli/data/accounts.json";
 
       serviceConfig = {
         Type = "oneshot";

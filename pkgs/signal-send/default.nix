@@ -2,7 +2,9 @@
   lib,
   stdenvNoCC,
   bashNonInteractive,
-  presage-cli,
+  signal-cli,
+  jq,
+  qrencode,
   coreutils,
   gawk,
   gnugrep,
@@ -15,12 +17,14 @@ let
     gawk
     gnugrep
     hostname
-    presage-cli
+    signal-cli
+    jq
+    qrencode
   ];
 in
 stdenvNoCC.mkDerivation {
   pname = "signal-send";
-  version = "0.1.0";
+  version = "0.2.0";
 
   src = ../..;
 
